@@ -1,0 +1,4 @@
+{
+  "name": "@ledgerscout/chain-data", "version": "0.1.0", "private": true, "type": "module",
+  "exports": { ".": "./src/index.ts", "./control": "./src/control.ts", "./config": "./src/config.ts", "./http": "./src/http.ts", "./api": "./src/api.ts", "./checks": "./src/checks.ts", "./output": "./src/output.ts" }
+}

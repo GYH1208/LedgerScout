@@ -1,0 +1,231 @@
+{
+  "testedAtUtc": "2026-11-11T09:06:41.400Z",
+  "timezone": "Asia/Shanghai",
+  "projectPath": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation",
+  "configFile": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\.env",
+  "requirementsDocument": "LedgerScout_产品需求文档_v0.1_2026-11-11.docx",
+  "config": {
+    "alchemyKeyPresent": true,
+    "etherscanKeyPresent": true
+  },
+  "status": "all_four_live_checks_passed",
+  "liveExitCode": 0,
+  "mainEvidenceDirectory": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-06-30-045Z-39774cac",
+  "successfulRawResponses": 12,
+  "connectivity": {
+    "chainId": "1",
+    "network": "Ethereum Mainnet",
+    "blockNumber": 26390679
+  },
+  "balance": {
+    "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+    "blockNumber": 26390679,
+    "wei": "5794616987480413546",
+    "eth": "5.794616987480413546"
+  },
+  "transactions": {
+    "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+    "startBlock": 0,
+    "endBlock": 26390679,
+    "sort": "desc",
+    "count": 50,
+    "pages": 2,
+    "complete": false,
+    "stopReason": "limit",
+    "nextPage": 3,
+    "note": "complete covers only normal transactions in the configured block range; duplicates are removed by hash"
+  },
+  "transfers": {
+    "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+    "startBlock": 0,
+    "endBlock": 26390679,
+    "incoming": {
+      "count": 50,
+      "pages": 2,
+      "complete": false,
+      "stopReason": "limit",
+      "nextPageKey": "9bb67bb6-2ac6-4a90-80ce-c8eed48ef9a5",
+      "replayCurrentPage": false,
+      "byCategory": {
+        "external": 7,
+        "internal": 5,
+        "erc20": 38
+      }
+    },
+    "outgoing": {
+      "count": 50,
+      "pages": 2,
+      "complete": false,
+      "stopReason": "limit",
+      "nextPageKey": "058d35eb-cbec-4073-a503-ad4a6fedc05e",
+      "replayCurrentPage": false,
+      "byCategory": {
+        "external": 3,
+        "internal": 0,
+        "erc20": 47
+      }
+    }
+  },
+  "narrowWindow": {
+    "startBlock": 26390579,
+    "endBlock": 26390679,
+    "transactions": {
+      "count": 0,
+      "complete": true,
+      "stopReason": "exhausted",
+      "evidenceDirectory": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-08-04-894Z-949025cd"
+    },
+    "transfers": {
+      "incomingCount": 0,
+      "outgoingCount": 0,
+      "incomingComplete": true,
+      "outgoingComplete": true,
+      "evidenceDirectory": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-08-06-737Z-61da9771"
+    }
+  },
+  "findings": [
+    "Alchemy 应用启用 Ethereum Mainnet 后真实调用成功。",
+    "Etherscan 直连发生连接超时；使用 Windows 已配置的本地 HTTP 代理并设置 NODE_USE_ENV_PROXY=1 后成功。",
+    "默认历史查询两页各取 25 条，普通交易、流入和流出均达到 50 条上限，complete=false；这些样本不代表完整历史。",
+    "较小的固定区块窗口返回真实空结果，普通交易和双向转账均 complete=true。"
+  ],
+  "network": {
+    "httpProxy": "http://127.0.0.1:10808",
+    "nodeUseEnvProxy": true,
+    "scope": "本轮进程环境，未修改系统设置或密钥文件"
+  },
+  "earlierOfflineValidation": {
+    "typecheckPassed": true,
+    "total": 22,
+    "passed": 22,
+    "failed": 0,
+    "source": "本会话在当前项目复制完成后执行，业务源码未改动"
+  },
+  "runHistory": [
+    {
+      "timestamp": "2026-11-11T09:03:40.194Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-03-35-332Z-2a7061f5\\0009-run-summary.json",
+      "outcomes": {
+        "connectivity": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-03-35-332Z-2a7061f5\\0002-connectivity-error.json"
+        },
+        "balance": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-03-35-332Z-2a7061f5\\0004-balance-error.json"
+        },
+        "transactions": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-03-35-332Z-2a7061f5\\0006-transactions-error.json"
+        },
+        "transfers": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-03-35-332Z-2a7061f5\\0008-transfers-error.json"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-11T09:05:01.275Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-04-09-130Z-3a9e75a0\\0006-run-summary.json",
+      "outcomes": {
+        "transactions": {
+          "status": "failed",
+          "error": "Network or response read failure (check DNS, TLS and network access)",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-04-09-130Z-3a9e75a0\\0005-transactions-error.json"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-11T09:05:30.642Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-27-441Z-da7d9000\\0010-run-summary.json",
+      "outcomes": {
+        "connectivity": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-27-441Z-da7d9000\\0002-connectivity-error.json"
+        },
+        "balance": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-27-441Z-da7d9000\\0005-balance-summary.json"
+        },
+        "transactions": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-27-441Z-da7d9000\\0007-transactions-error.json"
+        },
+        "transfers": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-27-441Z-da7d9000\\0009-transfers-error.json"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-11T09:05:51.126Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-49-257Z-3b5a9c51\\0004-run-summary.json",
+      "outcomes": {
+        "connectivity": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-49-257Z-3b5a9c51\\0003-connectivity-summary.json"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-11T09:05:55.164Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-52-096Z-0dce5025\\0003-run-summary.json",
+      "outcomes": {
+        "transfers": {
+          "status": "failed",
+          "error": "HTTP 403",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-05-52-096Z-0dce5025\\0002-transfers-error.json"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-11T09:06:41.400Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-06-30-045Z-39774cac\\0017-run-summary.json",
+      "outcomes": {
+        "connectivity": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-06-30-045Z-39774cac\\0003-connectivity-summary.json"
+        },
+        "balance": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-06-30-045Z-39774cac\\0006-balance-summary.json"
+        },
+        "transactions": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-06-30-045Z-39774cac\\0010-transactions-summary.json"
+        },
+        "transfers": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-06-30-045Z-39774cac\\0016-transfers-summary.json"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-11T09:08:05.595Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-08-04-894Z-949025cd\\0003-run-summary.json",
+      "outcomes": {
+        "transactions": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-08-04-894Z-949025cd\\0002-transactions-summary.json"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-11T09:08:10.467Z",
+      "manifest": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-08-06-737Z-61da9771\\0004-run-summary.json",
+      "outcomes": {
+        "transfers": {
+          "status": "passed",
+          "path": "C:\\Users\\geyuheng\\Desktop\\LedgerScout\\data-validation\\results\\2026-11-11T09-08-06-737Z-61da9771\\0003-transfers-summary.json"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "ledgerscout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "workspaces": ["data-validation", "packages/*"],
+  "scripts": {
+    "test": "tsx --test data-validation/test/*.test.ts packages/*/test/*.test.ts",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace data-validation",
+    "agent": "tsx packages/agent-runtime/src/cli.ts",
+    "agent:config": "tsx packages/agent-runtime/src/cli.ts --config"
+  },
+  "devDependencies": { "@types/node": "22.19.11", "tsx": "4.21.0", "typescript": "5.9.3" }
+}

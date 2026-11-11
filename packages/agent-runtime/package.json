@@ -1,0 +1,10 @@
+{
+  "name": "@ledgerscout/agent-runtime", "version": "0.1.0", "private": true, "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@ledgerscout/chain-data": "0.1.0",
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-schema": "1.5.2"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "chainpilot-data-validation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "test:offline": "npm test",
+    "test:connectivity": "tsx src/cli.ts connectivity",
+    "test:balance": "tsx src/cli.ts balance",
+    "test:transactions": "tsx src/cli.ts transactions",
+    "test:transfers": "tsx src/cli.ts transfers",
+    "test:all": "tsx src/cli.ts all",
+    "check:config": "tsx src/cli.ts config"
+  },
+  "dependencies": { "@ledgerscout/chain-data": "0.1.0" },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
