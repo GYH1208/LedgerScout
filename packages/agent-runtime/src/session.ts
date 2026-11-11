@@ -3,7 +3,7 @@ import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { redact, type QueryResult } from '@ledgerscout/chain-data';
 export const validId = (id: string) => /^[A-Za-z0-9_-]{1,80}$/.test(id);
-export type SessionData = { version: 1; sessionId: string; addresses: string[];
+export type SessionData = { version: 1; sessionId: string; addresses: string[]; summary?: string;
   turns: { user: string; assistant: string }[]; queries: QueryResult[] };
 async function atomicText(path: string, text: string) {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -28,6 +28,7 @@ export class SessionStore {
     try {
       const value = JSON.parse(await readFile(join(this.directory, 'session.json'), 'utf8')) as SessionData;
       if (value.version !== 1 || value.sessionId !== this.sessionId || !Array.isArray(value.turns) || !Array.isArray(value.queries) || !Array.isArray(value.addresses)) throw new Error('Invalid session data');
+      if (value.summary !== undefined && (typeof value.summary !== 'string' || value.summary.length > 2000 || Buffer.byteLength(value.summary, 'utf8') > 6000)) throw new Error('Invalid session summary');
       this.data = value;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     for (const item of await readdir(this.directory, { withFileTypes: true })) {

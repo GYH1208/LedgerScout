@@ -8,7 +8,7 @@ export type RuntimeTool = ToolDefinition & {
   execute(args: Record<string, unknown>, callId: string, signal?: AbortSignal): Promise<unknown>;
 };
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
-export type ModelRequest = { messages: ChatMessage[]; tools: ToolDefinition[]; signal?: AbortSignal; finalOnly?: boolean };
+export type ModelRequest = { messages: ChatMessage[]; tools: ToolDefinition[]; signal?: AbortSignal; finalOnly?: boolean; maxOutputTokens?: number };
 export type ModelReply = { content: string; toolCalls?: ToolCall[]; usage?: ModelUsage; truncated?: boolean };
 export type RequestModel = (request: ModelRequest) => Promise<ModelReply>;
 export type EngineEvent = { type: string; [key: string]: unknown };

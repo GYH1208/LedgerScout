@@ -40,6 +40,7 @@ export function createDeepSeekRequest(config: { key: string; model: string; maxO
   if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 4000) throw new Error('Invalid model output limit');
   return async request => {
     request.signal?.throwIfAborted();
+    if (request.maxOutputTokens !== undefined && (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 1)) throw new ModelError('Invalid model output limit');
     const timeout = AbortSignal.timeout(30000);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
     const messages = request.messages.map(m => {
@@ -53,7 +54,7 @@ export function createDeepSeekRequest(config: { key: string; model: string; maxO
       response = await raceSignal(fetcher('https://api.deepseek.com/chat/completions', {
         method: 'POST', signal, redirect: 'error',
         headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: config.model, messages, stream: false, max_tokens: maxTokens,
+        body: JSON.stringify({ model: config.model, messages, stream: false, max_tokens: Math.min(maxTokens, request.maxOutputTokens ?? maxTokens),
           thinking: { type: 'disabled' },
           ...(request.tools.length ? { tools: request.tools.map(t => ({ type: 'function', function: t })), tool_choice: 'auto' } : { tool_choice: 'none' }) }),
       }), signal);

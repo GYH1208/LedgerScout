@@ -52,3 +52,15 @@ test('DeepSeek adapter honours a parent abort and redacts response echoes', asyn
   const echo = createDeepSeekRequest({ key, model: 'deepseek-flash' }, (async () => Response.json({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: key } }] })) as typeof fetch);
   assert.equal((await echo(request)).content, '[REDACTED]');
 });
+
+test('per-request output reserve caps the provider payload and invalid limits never fetch', async () => {
+  const { createDeepSeekRequest } = await import('../src/model.js');
+  let calls = 0;
+  const call = createDeepSeekRequest({ key, model: 'deepseek-flash' }, (async (_url, init) => {
+    calls++; assert.equal(JSON.parse(String(init?.body)).max_tokens, 500);
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{}' } }] });
+  }) as typeof fetch);
+  await call({ ...request, maxOutputTokens: 500 });
+  for (const maxOutputTokens of [0, -1, NaN, 1.5]) await assert.rejects(call({ ...request, maxOutputTokens }), /output limit/i);
+  assert.equal(calls, 1);
+});
