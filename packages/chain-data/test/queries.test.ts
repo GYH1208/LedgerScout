@@ -28,6 +28,25 @@ test('query arguments reject unknown fields and over-budget inputs before networ
   } finally { await h.close(); }
 });
 
+test('snapshot persistence failure prevents a balance request at an uncommitted block', async () => {
+  const { createQueryService, parseConfig } = await import('../src/index.js');
+  const dir = await mkdtemp(join(tmpdir(), 'ledger-snapshot-')); const methods: string[] = [];
+  try {
+    const service = createQueryService({ config: parseConfig({ ALCHEMY_API_KEY: 'offline', REQUEST_INTERVAL_MS: '0', MAX_RETRIES: '0' }), outputDirectory: dir,
+      onSnapshot: async () => { throw new Error('snapshot checkpoint failed'); },
+      fetch: (async (_url, init) => {
+        const b = JSON.parse(String(init?.body)); methods.push(b.method);
+        return Response.json({ jsonrpc: '2.0', id: b.id, result: b.method === 'eth_chainId' ? '0x1' : '0xa' });
+      }) as typeof fetch,
+    });
+    const result = await service.query('get_eth_balance', { address: a }, { sessionId: 's_test', runId: 'r_test', toolCallId: 'a' });
+    assert.equal(result.status, 'error'); assert.deepEqual(methods, ['eth_chainId', 'eth_blockNumber']);
+    const retry = await service.query('get_eth_balance', { address: a }, { sessionId: 's_test', runId: 'r_test', toolCallId: 'b' });
+    assert.equal(retry.status, 'error');
+    assert.deepEqual(methods, ['eth_chainId', 'eth_blockNumber', 'eth_chainId', 'eth_blockNumber']);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('two addresses use a shared fixed snapshot with exact amounts and persisted evidence', async () => {
   const h = await harness();
   try {

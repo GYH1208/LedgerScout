@@ -54,3 +54,14 @@ test('already aborted scopes also consume rejected work without an unhandled rej
   await assert.rejects(raceSignal(Promise.reject(new Error('late transport failure')), controller.signal), /cancel/i);
   await new Promise(resolve => setImmediate(resolve));
 });
+
+test('an asynchronous request reservation must commit before fetching', async () => {
+  const { Transport } = await import('../src/http.js');
+  const { parseConfig } = await import('../src/config.js'); let fetched = false;
+  const transport = new Transport(parseConfig({ REQUEST_INTERVAL_MS: '0' }), async () => {}, {
+    fetch: (async () => { fetched = true; return Response.json({ ok: true }); }) as typeof fetch,
+    scope: { beforeRequest: async () => { await new Promise(resolve => setImmediate(resolve)); throw new Error('checkpoint storage failed'); } },
+  });
+  await assert.rejects(transport.request('x', new URL('https://example.com'), {}, x => x), /checkpoint storage failed/);
+  assert.equal(fetched, false);
+});

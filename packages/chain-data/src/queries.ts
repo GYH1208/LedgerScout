@@ -59,7 +59,10 @@ export class QueryService {
   constructor(private options: {
     config: Config; outputDirectory: string; fetch?: typeof fetch; scheduler?: RequestScheduler;
     additionalSecrets?: string[]; initialResults?: QueryResult[];
+    initialSnapshot?: number; onSnapshot?: (block: number) => Promise<void>;
   }) {
+    if (options.initialSnapshot !== undefined && (!Number.isSafeInteger(options.initialSnapshot) || options.initialSnapshot < 0)) invalid();
+    this.snapshot = options.initialSnapshot;
     this.secrets = [options.config.alchemyKey, options.config.etherscanKey, ...(options.additionalSecrets ?? [])].filter(Boolean);
     for (const q of options.initialResults ?? []) this.queries.set(q.queryId, q);
   }
@@ -88,7 +91,9 @@ export class QueryService {
     try {
       // One validated snapshot per run. Explicit Etherscan windows can work without Alchemy.
       if (this.snapshot === undefined && !(name === 'list_normal_transactions' && input.endBlock !== undefined && !cfg.alchemyKey)) {
-        this.snapshot = (await new Checks(cfg, api).connectivity()).blockNumber;
+        const snapshot = (await new Checks(cfg, api).connectivity()).blockNumber;
+        await this.options.onSnapshot?.(snapshot);
+        this.snapshot = snapshot;
       }
       const end = input.endBlock ?? this.snapshot!;
       const balanceBlock = input.blockNumber ?? this.snapshot!;

@@ -4,7 +4,7 @@ import { delay, raceSignal } from './control.js';
 export class ApiError extends Error {
   constructor(message: string, readonly retryable = false) { super(message); }
 }
-export type RequestScope = { signal?: AbortSignal | undefined; beforeRequest?: (() => void) | undefined };
+export type RequestScope = { signal?: AbortSignal | undefined; beforeRequest?: (() => void | Promise<void>) | undefined };
 type Dependencies = {
   fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>; random?: () => number;
   scope?: RequestScope; scheduler?: RequestScheduler;
@@ -49,7 +49,8 @@ export class Transport {
       this.scope.signal?.throwIfAborted();
       let retryAfter = 0;
       const outcome = await this.scheduler.run(url.hostname, this.cfg.intervalMs, this.scope.signal, this.sleep, async () => {
-        this.scope.signal?.throwIfAborted(); this.scope.beforeRequest?.();
+        this.scope.signal?.throwIfAborted(); await this.scope.beforeRequest?.();
+        this.scope.signal?.throwIfAborted();
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(new Error('Request timeout')), this.cfg.timeoutMs);
         const signal = this.scope.signal ? AbortSignal.any([this.scope.signal, controller.signal]) : controller.signal;

@@ -21,3 +21,11 @@ test('CLI supports help without credentials and rejects traversal sessions', () 
   const r = cli(['--session', '../escape', 'query'], { DEEPSEEK_API_KEY: 'offline-deepseek-secret' });
   assert.equal(r.status, 1); assert.match(r.stderr, /session/i);
 });
+
+test('CLI resume requires a session and disallows a new question or path traversal', () => {
+  for (const args of [['--resume', 'r_old'], ['--session', 's_one', '--resume', 'r_old', '新问题'], ['--session', 's_one', '--resume', '../escape']]) {
+    const r = cli(args);
+    assert.equal(r.status, 1); assert.match(r.stderr, /resume|恢复|input/i); assert.ok(!r.stderr.includes('DEEPSEEK_API_KEY'));
+  }
+  assert.match(cli(['--help']).stdout, /--resume/);
+});

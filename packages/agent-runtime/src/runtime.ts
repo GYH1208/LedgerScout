@@ -9,6 +9,7 @@ import { fitContextAsync, measureContext } from './context.js';
 import { compactHistory, historyMessages } from './compaction.js';
 import { fallbackAnswer, parseAnswer, renderAnswer, type AnswerDraft } from './answer.js';
 import { RunJournal, SessionStore, validId } from './session.js';
+import { CheckpointStore, type Checkpoint } from './checkpoint.js';
 import { systemPrompt, toolDefinitions } from './tools.js';
 import type { ChatMessage, ModelRequest, ModelReply, RequestModel, RunStatus, RuntimeTool, TokenCounter } from './types.js';
 
@@ -17,34 +18,39 @@ export const defaultLimits = { maxModelRequests: 8, maxToolCalls: 12, maxHttpReq
   maxContextTokens: 12000, reservedOutputTokens: 2000, retryDelayMs: 1000 };
 type Limits = typeof defaultLimits;
 export type RunResult = { sessionId: string; runId: string; directory: string; status: RunStatus; answer: string;
-  counts: { models: number; tools: number; http: number }; queries: QueryResult[]; warnings: string[]; error?: string;
+  counts: { models: number; tools: number; http: number }; queries: QueryResult[]; warnings: string[]; error?: string; resumeOf?: string; resumable?: boolean;
   tokenUsage: { source: 'provider'; inputTokens: number; outputTokens: number; totalTokens: number; reportedRequests: number; unknownRequests: number } };
 type Options = { input: string; config: Config; request: RequestModel; outputDirectory: string;
-  sessionId?: string; signal?: AbortSignal; fetch?: typeof fetch; secrets?: string[];
+  sessionId?: string; resumeRunId?: string; signal?: AbortSignal; fetch?: typeof fetch; secrets?: string[];
   counter?: TokenCounter; limits?: Partial<Limits>; onEvent?: (event: { type: string; [key: string]: unknown }) => void };
 const activeSessions = new Set<string>();
 
 export async function runAgent(options: Options): Promise<RunResult> {
+  if (options.resumeRunId && (!options.sessionId || options.input.trim())) throw new Error('Resume requires sessionId and no new input / 问题');
   const sessionId = options.sessionId ?? `s_${randomUUID()}`;
   if (!validId(sessionId)) throw new Error('Invalid session ID');
   const key = resolve(options.outputDirectory, sessionId);
   if (activeSessions.has(key)) throw new Error('Session is already running');
   activeSessions.add(key);
-  try { return await execute(options, sessionId); }
+  try {
+    const recovery = options.resumeRunId ? await CheckpointStore.load(options.outputDirectory, sessionId, options.resumeRunId, defaultLimits) : undefined;
+    return await execute(options, sessionId, recovery);
+  }
   finally { activeSessions.delete(key); }
 }
 
-async function execute(options: Options, sessionId: string): Promise<RunResult> {
+async function execute(options: Options, sessionId: string, recovery?: Awaited<ReturnType<typeof CheckpointStore.load>>): Promise<RunResult> {
   const limits = { ...defaultLimits, ...options.limits };
   for (const [name, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value < 1 || value > defaultLimits[name as keyof Limits]) throw new Error(`Invalid runtime limit: ${name}`);
   }
+  if (recovery) for (const name of Object.keys(limits) as (keyof Limits)[]) limits[name] = Math.min(limits[name], recovery.state.limits[name]!);
   if (limits.reservedOutputTokens >= limits.maxContextTokens) throw new Error('Output reserve must be smaller than context capacity');
   const inputTokens = limits.maxContextTokens - limits.reservedOutputTokens;
   const runId = `r_${randomUUID()}`;
   const secrets = [options.config.alchemyKey, options.config.etherscanKey, ...(options.secrets ?? [])].filter(Boolean);
   const safe = (value: string) => String(redact(value, secrets));
-  const input = safe(options.input.trim());
+  const input = safe(recovery?.state.input ?? options.input.trim());
   const store = new SessionStore(options.outputDirectory, sessionId, secrets);
   const journal = new RunJournal(store, runId, secrets);
   const result: RunResult = { sessionId, runId, directory: journal.directory, status: 'failed', answer: '',
@@ -52,11 +58,34 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
     tokenUsage: { source: 'provider', inputTokens: 0, outputTokens: 0, totalTokens: 0, reportedRequests: 0, unknownRequests: 0 } };
   let service: QueryService | undefined;
   let draft: AnswerDraft | undefined; let fatal: unknown; let exhausted = false; let opened = false;
-  let repairUsed = false; let needsRepair = false;
+  if (recovery) { result.counts = { ...recovery.state.counts }; result.tokenUsage = { ...recovery.state.tokenUsage }; result.resumeOf = recovery.state.runId; }
+  const lineage = [...(recovery?.state.lineage ?? []), runId];
+  if (lineage.length > 32) throw new Error('Recovery chain limit reached');
+  const chainRuns = new Set(lineage);
+  const cache = new Map<string, QueryResult>(); const failures = new Map<string, number>(recovery?.state.failures ?? []);
+  for (const [signature, id] of recovery?.state.cache ?? []) cache.set(signature, recovery!.queries.find(q => q.queryId === id)!);
+  const cp: Checkpoint = { version: 1, sessionId, runId, input, addresses: [], lineage, limits, counts: result.counts,
+    tokenUsage: result.tokenUsage, messages: recovery?.state.messages ?? [], reply: recovery?.state.reply,
+    completedTools: recovery?.state.completedTools ?? [], queryRefs: [], snapshot: recovery?.state.snapshot,
+    cache: [], failures: [], repairUsed: recovery?.state.repairUsed ?? false, elapsedMs: 0, reservedMs: 0, closed: false };
+  const checkpoints = new CheckpointStore(join(journal.directory, 'checkpoint.json'), secrets);
+  const began = performance.now();
+  const previousElapsed = (recovery?.state.elapsedMs ?? 0) + (recovery?.state.reservedMs ?? 0);
+  let reservedMs = 0; let checkpointReady = false;
+  let repairUsed = recovery?.state.repairUsed ?? false; let needsRepair = false;
+  let replayReply = recovery?.state.reply;
+  const saveCheckpoint = async () => {
+    if (!checkpointReady) return;
+    cp.counts = { ...result.counts }; cp.tokenUsage = { ...result.tokenUsage }; cp.repairUsed = repairUsed;
+    cp.cache = [...cache].map(([signature, q]) => [signature, q.queryId]); cp.failures = [...failures];
+    cp.elapsedMs = previousElapsed + Math.max(0, performance.now() - began);
+    cp.reservedMs = Math.min(reservedMs, Math.max(0, Math.ceil(limits.runTimeoutMs - cp.elapsedMs)));
+    await checkpoints.save(cp, service?.all() ?? recovery?.queries ?? []);
+  };
   const pendingQueries = new Set<Promise<QueryResult>>();
   const runController = new AbortController();
   const signal = options.signal ? AbortSignal.any([options.signal, runController.signal]) : runController.signal;
-  const timer = setTimeout(() => { exhausted = true; runController.abort(new Error('Runtime time budget exhausted')); }, limits.runTimeoutMs);
+  const timer = setTimeout(() => { exhausted = true; runController.abort(new Error('Runtime time budget exhausted')); }, Math.max(1, limits.runTimeoutMs - previousElapsed));
   const budget = (message: string): never => { exhausted = true; runController.abort(new Error(message)); throw new Error(message); };
   const record = async (type: string, payload: Record<string, unknown> = {}) => {
     await journal.event(type, { sessionId, ...payload });
@@ -67,6 +96,8 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
     await record('run_started', { input, engine: 'pi-agent-core@1.5.2' });
     if (store.interruptedRuns.length) result.warnings.push(`发现 ${store.interruptedRuns.length} 个已中断的旧运行，仅标记，不自动重放。`);
     signal.throwIfAborted();
+    if (previousElapsed >= limits.runTimeoutMs) budget('Runtime time budget exhausted');
+    if (recovery) store.data.addresses = recovery.state.addresses;
     const addresses = [...new Set(input.match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g) ?? [])];
     const invalidTarget = (input.match(/0x[a-zA-Z0-9]+/g) ?? []).some(a => !/^0x(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(a)) ||
       !addresses.length && /\b[a-zA-Z0-9-]+\.eth\b/i.test(input);
@@ -74,7 +105,8 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
     const allowedAddresses = new Set(store.data.addresses.map(a => a.toLowerCase()));
     const historyRequested = /上次|上一|刚才|之前|历史结果|已有证据|证据明细|previous|earlier|last query|q_[a-zA-Z0-9-]+/i.test(input);
     const freshRequested = /当前|现在|最新|重新|再查|刷新|current|latest|refresh|recheck/i.test(input);
-    const canUseEvidence = (q: QueryResult) => q.runId === runId || historyRequested && !freshRequested &&
+    const activeChainQueries = () => [...new Map((service?.all() ?? []).filter(q => chainRuns.has(q.runId)).map(q => [q.toolCallId, q])).values()];
+    const canUseEvidence = (q: QueryResult) => chainRuns.has(q.runId) && activeChainQueries().some(active => active.queryId === q.queryId) || historyRequested && !freshRequested &&
       (input.includes(q.queryId) || allowedAddresses.has(q.address.toLowerCase()));
     if (invalidTarget) {
       draft = { kind: 'clarification', message: '目标地址无效或使用了 ENS，请提供完整的 20 字节 0x 地址；不会沿用旧地址代替这个输入。' };
@@ -84,12 +116,17 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
       draft = { kind: 'clarification', message: '请提供完整的 Ethereum 0x 公开地址。首版不支持 ENS，也不会使用默认测试地址代替你的目标。' };
     }
     service = createQueryService({ config: options.config, outputDirectory: join(journal.directory, 'queries'),
-      additionalSecrets: secrets, initialResults: store.data.queries.filter(q => q.sessionId === sessionId),
+      additionalSecrets: secrets, initialResults: recovery?.queries ?? store.data.queries.filter(q => q.sessionId === sessionId),
+      initialSnapshot: cp.snapshot, onSnapshot: async block => { cp.snapshot = block; await saveCheckpoint(); },
       ...(options.fetch ? { fetch: options.fetch } : {}) });
-    const cache = new Map<string, QueryResult>(); const failures = new Map<string, number>();
     const tools: RuntimeTool[] = toolDefinitions.map(definition => ({ ...definition,
       execute: async (args, toolCallId) => {
         signal.throwIfAborted();
+        const replayed = cp.completedTools.find(t => t.id === toolCallId);
+        if (replayed) {
+          if (replayed.isError) throw new Error(replayed.content);
+          return JSON.parse(replayed.content);
+        }
         if (definition.name === 'read_query_evidence') {
           const q = service!.all().find(q => q.queryId === args.queryId);
           if (!q || !canUseEvidence(q)) throw new Error('INVALID_ARGUMENT: evidence is outside the current target or requires an explicit historical request');
@@ -106,21 +143,28 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
         const toolSignal = AbortSignal.any([signal, toolController.signal]);
         try {
           const pending = service!.query(definition.name, args, { sessionId, runId, toolCallId, signal: toolSignal,
-            beforeRequest: () => {
+            beforeRequest: async () => {
               signal.throwIfAborted();
               if (result.counts.http >= limits.maxHttpRequests) budget('HTTP request budget exhausted');
-              result.counts.http++;
+              result.counts.http++; await saveCheckpoint();
             },
           });
           pendingQueries.add(pending);
           void pending.then(() => pendingQueries.delete(pending), () => pendingQueries.delete(pending));
           const q = await raceSignal(pending, toolSignal);
-          await record('query_finished', { toolCallId, queryId: q.queryId, status: q.status, completeness: q.completeness });
           if (q.status === 'error') {
             failures.set(signature, (failures.get(signature) ?? 0) + 1);
+            await saveCheckpoint();
+            await record('query_finished', { toolCallId, queryId: q.queryId, status: q.status, completeness: q.completeness });
             throw new Error(`${q.error?.code ?? 'QUERY_ERROR'}: ${q.error?.message ?? 'Query failed'}; queryId=${q.queryId}`);
           }
           cache.set(signature, q);
+          // The durable query already determines the tool result, even if cancellation
+          // interrupts Pi before its tool_execution_end event.
+          cp.completedTools = cp.completedTools.filter(t => t.id !== toolCallId);
+          cp.completedTools.push({ id: toolCallId, content: JSON.stringify(service!.preview(q)), isError: false });
+          await saveCheckpoint();
+          await record('query_finished', { toolCallId, queryId: q.queryId, status: q.status, completeness: q.completeness });
           return service!.preview(q);
         } finally { clearTimeout(toolTimer); }
       },
@@ -149,8 +193,11 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
           const estimate = fitted.measurement;
           if (estimate.fallback && !result.warnings.some(w => w.includes('本地Token'))) result.warnings.push('本地Token计数不可用，已回退保守估算。');
           await record('context_prepared', { purpose, ...estimate, droppedMessages: request.messages.length - selectedMessages.length });
+          if (purpose === 'task') { cp.messages = selectedMessages; cp.reply = undefined; cp.completedTools = []; }
           result.counts.models++;
           result.tokenUsage.unknownRequests++;
+          reservedMs = limits.modelTimeoutMs;
+          await saveCheckpoint();
           const modelRequestId = `m_${randomUUID()}`;
           const modelController = new AbortController();
           const modelTimer = setTimeout(() => modelController.abort(new Error('Model timeout')), limits.modelTimeoutMs);
@@ -169,13 +216,15 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
               result.tokenUsage.reportedRequests++;
               result.tokenUsage.unknownRequests--;
             }
+            reservedMs = 0; if (purpose === 'task') cp.reply = reply;
+            await saveCheckpoint();
             await record('model_response', { modelRequestId, purpose, content: reply.content, toolCalls: reply.toolCalls ?? [], usage: reply.usage ?? null });
             return reply;
           } catch (error) {
             await record('model_error', { modelRequestId, purpose, code: modelSignal.aborted ? 'TIMEOUT_OR_CANCELLED' : 'MODEL_ERROR', message: safe(error instanceof Error ? error.message : 'Model failed') });
             if (purpose === 'summary' || attempt || signal.aborted || !(error as { retryable?: boolean }).retryable || result.counts.models >= limits.maxModelRequests) throw error;
             await delay(limits.retryDelayMs, signal);
-          } finally { clearTimeout(modelTimer); }
+          } finally { reservedMs = 0; clearTimeout(modelTimer); }
         }
         throw new Error('Model failed');
       };
@@ -187,9 +236,9 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
       const frame = (summary?: string): ChatMessage[] => [system, ...historyMessages([], summary), ...evidenceMessages, current];
       const fit = (messages: ChatMessage[]) => fitContextAsync(messages, limits.maxContextBytes, { tools: toolDefinitions, maxTokens: inputTokens, counter, signal });
       // A current request which cannot fit by itself must not spend a summary call.
-      await fit(frame());
+      if (!recovery) await fit(frame());
       let contextSummary = store.data.summary;
-      if (contextSummary) {
+      if (contextSummary && !recovery) {
         try { await fit(frame(contextSummary)); }
         catch {
           contextSummary = undefined;
@@ -199,8 +248,17 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
       }
       const buildMessages = (): ChatMessage[] => [system, ...historyMessages([], contextSummary), ...evidenceMessages,
         ...historyMessages(store.data.turns), current];
-      const size = await measureContext(buildMessages(), toolDefinitions, counter, signal);
-      if (store.data.turns.length > 2 && result.counts.models <= limits.maxModelRequests - 3 &&
+      cp.addresses = [...allowedAddresses];
+      cp.messages = recovery?.state.messages ?? (await fit(buildMessages())).messages; checkpointReady = true;
+      await saveCheckpoint();
+      if (recovery) {
+        recovery.state.resumedBy = runId;
+        await new CheckpointStore(recovery.path, secrets).save(recovery.state, recovery.queries);
+        result.warnings.push('显式恢复原运行：复用已完成证据和固定区块；未完成的只读查询可能从头重试，不代表最新刷新。');
+        await record('run_resumed', { resumeOf: recovery.state.runId });
+      }
+      const size = await measureContext(recovery ? cp.messages : buildMessages(), toolDefinitions, counter, signal);
+      if (!recovery && store.data.turns.length > 2 && result.counts.models <= limits.maxModelRequests - 3 &&
         (size.bytes > limits.maxContextBytes * 0.8 || size.tokens > inputTokens * 0.8)) {
         try {
           const compacted = await compactHistory({ turns: store.data.turns, summary: store.data.summary,
@@ -217,14 +275,16 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
         }
       }
       // The gateway fits every actual request with its actual tool set, including retries.
-      const messages = buildMessages();
+      const messages = recovery ? cp.messages : buildMessages();
       const engineResult = await runPi({ messages, tools, signal, maxRequests: limits.maxModelRequests,
         request: async request => {
-          const reply = await requestModel(request, 'task');
+          let reply: ModelReply;
+          if (replayReply) { reply = replayReply; replayReply = undefined; await record('model_response_replayed'); }
+          else reply = await requestModel(request, 'task');
           if (!reply.toolCalls?.length) {
             try {
               draft = parseAnswer(reply.content, service!.all().filter(canUseEvidence));
-              const current = service!.all().filter(q => q.runId === runId);
+              const current = activeChainQueries();
               if (draft.kind === 'answer' && current.some(q => !draft!.queryIds!.includes(q.queryId))) throw new Error('Answer omitted a query required by this run');
               needsRepair = false;
             } catch { draft = undefined; needsRepair = true; }
@@ -239,10 +299,16 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
         onEvent: async event => {
           signal.throwIfAborted();
           if (event.type === 'tool_execution_start') {
+            if (cp.completedTools.some(t => t.id === event.toolCallId)) { await record('tool_replayed', { toolCallId: event.toolCallId }); return; }
             if (result.counts.tools >= limits.maxToolCalls) budget('Tool call budget exhausted');
-            result.counts.tools++;
+            result.counts.tools++; reservedMs = limits.toolTimeoutMs; await saveCheckpoint();
             await record('tool_started', { toolCallId: event.toolCallId, name: event.toolName, arguments: event.args });
           } else if (event.type === 'tool_execution_end') {
+            const blocks = (event.result as { content?: { type: string; text?: string }[] })?.content ?? [];
+            const content = blocks.filter(b => b.type === 'text').map(b => b.text ?? '').join('');
+            cp.completedTools = cp.completedTools.filter(t => t.id !== event.toolCallId);
+            cp.completedTools.push({ id: String(event.toolCallId), content: safe(content), isError: Boolean(event.isError) });
+            reservedMs = 0; await saveCheckpoint();
             await record('tool_finished', { toolCallId: event.toolCallId, name: event.toolName, isError: event.isError });
           }
         },
@@ -259,7 +325,8 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
   }
   const allQueries = service?.all() ?? [];
   const selectedIds = new Set(draft?.queryIds ?? []);
-  result.queries = allQueries.filter(q => q.runId === runId || selectedIds.has(q.queryId));
+  const latestByCall = new Map(allQueries.filter(q => chainRuns.has(q.runId)).map(q => [q.toolCallId, q.queryId]));
+  result.queries = allQueries.filter(q => latestByCall.get(q.toolCallId) === q.queryId && chainRuns.has(q.runId) || selectedIds.has(q.queryId));
   const usable = result.queries.filter(q => q.status !== 'error');
   if (fatal) result.error = safe(fatal instanceof Error ? fatal.message : 'Runtime failed');
   if (options.signal?.aborted) result.status = 'cancelled';
@@ -276,12 +343,14 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
     if (result.status === 'cancelled') result.answer = fallbackAnswer(result.queries, '用户已取消本次运行。');
     if (result.status === 'exhausted') result.answer += '\n运行预算已耗尽，未自动继续查询。';
     result.answer = safe(result.answer);
-    if (result.queries.some(q => q.runId !== runId)) {
+    if (result.queries.some(q => !chainRuns.has(q.runId))) {
       result.warnings.push('包含历史证据，其旧查询未在本轮重新获取。');
       result.answer = '以下包含历史查询证据，以各条取得时间和区块为准；旧查询未在本轮刷新。\n\n' + result.answer;
     }
     if (!opened) { result.status = 'failed'; result.error = 'Unable to persist runtime storage'; result.answer = '本地运行记录写入失败，未完成查询。'; return result; }
     const cleanup = async () => {
+      cp.closed = ['completed', 'awaiting_user', 'exhausted'].includes(result.status) || result.status === 'partial' && !fatal && !!draft;
+      result.resumable = checkpointReady && !cp.closed;
       await journal.save('answer.json', { draft: redact(draft ?? null, secrets), answer: result.answer });
       // Commit query outcome before adding the turn to the reusable session index.
       await journal.save('run-summary.json', result);
@@ -289,10 +358,13 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
       store.data.turns.push({ user: input, assistant: result.answer });
       store.data.queries = allQueries;
       await store.save();
+      reservedMs = 0;
+      await saveCheckpoint();
     };
     await raceSignal(cleanup(), AbortSignal.timeout(5000));
   } catch {
     result.status = 'failed'; result.error = 'Unable to persist runtime storage';
+    result.resumable = false;
     result.answer = '本地证据或运行记录写入失败，结果不能标为可复核的成功。';
     // Best-effort correction keeps every writable sink consistent with the returned failure.
     await raceSignal(Promise.allSettled([
