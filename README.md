@@ -68,7 +68,17 @@ npm run test:all --workspace data-validation
 
 会话最多保留最近 20 轮原文、一个历史摘要和最近 32 个查询。上下文接近容量 80% 时，尝试一次模型摘要，压缩较旧完整轮次并保留最近两轮原文；摘要会随会话保存，重新打开后继续使用。摘要只承接研究意图和未完成事项，事实仍需引用真实查询证据。摘要失败会记录警告并降级按完整轮次裁剪；取消时不替换摘要。
 
-容量默认按 12000 Token、预留 2000 输出 Token 控制，同时保留 24000 字节上限。请求前的 Token 数是保守估算，包含消息和工具定义，不能作为精确账单。`events.jsonl` 的 `context_prepared` 记录估算及丢弃消息数量；`run-summary.json` / `--json` 的 `tokenUsage` 累计供应商已报告用量，`unknownRequests` 表示失败或未报告用量的请求数，不能把这些请求理解为零消耗。
+容量默认按 12000 Token、预留 2000 输出 Token 控制，同时保留 24000 字节上限。未安装本地编码器时，请求前的 Token 数采用包含消息和工具定义的保守估算，不能作为精确账单。`events.jsonl` 的 `context_prepared` 记录计数方法及丢弃消息数量；`run-summary.json` / `--json` 的 `tokenUsage` 累计供应商已报告用量，`unknownRequests` 表示失败或未报告用量的请求数，不能把这些请求理解为零消耗。
+
+可选安装官方本地编码器（需要 `uv`，或用 Python 3.10+ 执行脚本）：
+
+```sh
+npm run tokenizer:setup
+```
+
+安装后 CLI 自动使用官方离线模板计数，`context_prepared.method` 为 `local_tokenizer`，包含 encoding 和固定资产 revision；未安装或计数失败时仍使用 `estimated`。安装不需要API密钥，资产保存在忽略的 `.runtime/tokenizer/`，不随 Git 提交；下载校验失败可重跑命令。`deepseek-flash` 对应 V4.1，`deepseek-v4-pro` 对应 V4；两个词表均校验 SHA-256，worker只做本地编码、不联网，不接收API密钥。离线模板计数不等于供应商实际账单；服务端或模型映射更新后需要重新验证。
+
+普通 `npm test` 不需要本地资产。安装后可运行 `LEDGERSCOUT_TEST_TOKENIZER=1 npm test` 验证真实离线编码器；该测试不会调用模型API。
 
 摘要请求也占用原有模型请求次数和超时预算，不额外调用工具；不足三次模型请求预算时跳过摘要。缺少终态摘要的旧运行标记为 `interrupted`，不会自动重放。当前面向单用户、单进程，不提供多进程协同锁。
 

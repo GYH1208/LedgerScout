@@ -9,7 +9,8 @@
     "test": "tsx --test data-validation/test/*.test.ts packages/*/test/*.test.ts",
     "typecheck": "tsc --noEmit && npm run typecheck --workspace data-validation",
     "agent": "tsx packages/agent-runtime/src/cli.ts",
-    "agent:config": "tsx packages/agent-runtime/src/cli.ts --config"
+    "agent:config": "tsx packages/agent-runtime/src/cli.ts --config",
+    "tokenizer:setup": "python3 packages/agent-runtime/scripts/setup-tokenizer.py"
   },
   "devDependencies": { "@types/node": "22.19.11", "tsx": "4.21.0", "typescript": "5.9.3" }
 }

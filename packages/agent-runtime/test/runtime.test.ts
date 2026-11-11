@@ -434,3 +434,45 @@ test('summary timeout falls back once and shares the three-request task budget',
     assert.equal(result.tokenUsage.unknownRequests, 3);
   } finally { await h.close(); }
 });
+
+test('runtime uses local prompt counts for compaction decisions and records provenance', async () => {
+  const h = await setup();
+  try {
+    const seed = await seedHistory(h);
+    const result = await h.run(async r => {
+      assert.ok(r.tools.length > 0); assert.ok(r.messages.some(m => m.content.includes('旧问题0')));
+      return { content: '{"kind":"clarification","message":"请给区块"}' };
+    }, { sessionId: seed.sessionId, counter: async () => ({ tokens: 100, method: 'local_tokenizer', encoding: 'v41', revision: 'fixture' }) });
+    assert.equal(result.status, 'awaiting_user'); assert.equal(result.counts.models, 1);
+    const events = (await readFile(join(result.directory, 'events.jsonl'), 'utf8')).trim().split('\n').map(l => JSON.parse(l));
+    const prepared = events.find(e => e.type === 'context_prepared');
+    assert.equal(prepared.method, 'local_tokenizer'); assert.equal(prepared.tokens, 100); assert.equal(prepared.encoding, 'v41');
+    assert.equal(prepared.revision, 'fixture');
+  } finally { await h.close(); }
+});
+
+test('tokenizer fallback is recorded even when preflight rejects the estimated context', async () => {
+  const h = await setup();
+  try {
+    const result = await h.run(async () => { throw new Error('must not call'); }, {
+      counter: async () => { throw new Error('unavailable'); }, limits: { maxContextTokens: 3000 },
+    });
+    assert.equal(result.status, 'failed'); assert.equal(result.counts.models, 0);
+    assert.ok(result.warnings.some((w: string) => w.includes('本地Token')));
+    const events = await readFile(join(result.directory, 'events.jsonl'), 'utf8');
+    assert.ok(events.includes('tokenizer_fallback'));
+  } finally { await h.close(); }
+});
+
+test('real offline tokenizer participates in the Pi query loop without provider calls', { skip: process.env.LEDGERSCOUT_TEST_TOKENIZER !== '1' }, async () => {
+  const { createLocalTokenCounter } = await import('../src/tokenizer.js');
+  const h = await setup(); const counter = createLocalTokenCounter({ model: 'deepseek-flash' }); let turn = 0;
+  try {
+    const result = await h.run(async r => ++turn === 1 ? toolCall() : draft(r), { counter: counter.count });
+    assert.equal(result.status, 'completed'); assert.equal(result.counts.models, 2);
+    const events = (await readFile(join(result.directory, 'events.jsonl'), 'utf8')).trim().split('\n').map(l => JSON.parse(l));
+    const prepared = events.filter(e => e.type === 'context_prepared');
+    assert.equal(prepared.length, 2); assert.ok(prepared.every(e => e.method === 'local_tokenizer'));
+    assert.equal(result.tokenUsage.unknownRequests, 2);
+  } finally { counter.close(); await h.close(); }
+});

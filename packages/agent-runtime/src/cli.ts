@@ -1,8 +1,11 @@
 import { createInterface } from 'node:readline';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { redact } from '@ledgerscout/chain-data';
 import { createDeepSeekRequest, loadRuntimeConfig } from './model.js';
 import { runAgent } from './runtime.js';
 import { validId } from './session.js';
+import { createLocalTokenCounter, tokenizerDirectory } from './tokenizer.js';
 
 let secrets: string[] = [];
 async function main() {
@@ -28,13 +31,14 @@ async function main() {
     return;
   }
   const request = createDeepSeekRequest(config);
+  const tokenizer = existsSync(join(tokenizerDirectory, 'ready.json')) ? createLocalTokenCounter({ model: config.model }) : undefined;
   async function run(input: string) {
     const controller = new AbortController();
     const interrupt = () => controller.abort(new Error('User cancelled'));
     process.on('SIGINT', interrupt);
     try {
       const result = await runAgent({ input, config: config.chain, request, outputDirectory: config.outputDirectory,
-        ...(sessionId ? { sessionId } : {}), signal: controller.signal, secrets,
+        ...(sessionId ? { sessionId } : {}), signal: controller.signal, secrets, counter: tokenizer?.count,
         onEvent: e => { if (!json && e.type === 'tool_started') console.error(`查询中：${String(e.name)}`); },
       });
       sessionId = result.sessionId;
@@ -43,14 +47,16 @@ async function main() {
       process.exitCode = result.status === 'failed' || result.status === 'exhausted' ? 1 : result.status === 'cancelled' ? 130 : 0;
     } finally { process.off('SIGINT', interrupt); }
   }
-  if (words.length) { await run(words.join(' ')); return; }
-  if (json) throw new Error('--json requires a question argument');
-  console.log('LedgerScout 就绪。输入问题；/exit 退出。');
-  const input = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
-  for await (const line of input) {
-    if (line.trim() === '/exit') { input.close(); break; }
-    if (line.trim()) await run(line);
-  }
+  try {
+    if (words.length) { await run(words.join(' ')); return; }
+    if (json) throw new Error('--json requires a question argument');
+    console.log('LedgerScout 就绪。输入问题；/exit 退出。');
+    const input = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+    for await (const line of input) {
+      if (line.trim() === '/exit') { input.close(); break; }
+      if (line.trim()) await run(line);
+    }
+  } finally { tokenizer?.close(); }
 }
 main().catch(error => {
   console.error(String(redact(error instanceof Error ? error.message : 'Runtime initialization failed', secrets)));

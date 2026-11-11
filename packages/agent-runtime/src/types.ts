@@ -11,5 +11,7 @@ export type ModelUsage = { inputTokens: number; outputTokens: number; totalToken
 export type ModelRequest = { messages: ChatMessage[]; tools: ToolDefinition[]; signal?: AbortSignal; finalOnly?: boolean; maxOutputTokens?: number };
 export type ModelReply = { content: string; toolCalls?: ToolCall[]; usage?: ModelUsage; truncated?: boolean };
 export type RequestModel = (request: ModelRequest) => Promise<ModelReply>;
+export type TokenCount = { tokens: number; method: 'local_tokenizer'; encoding: string; revision: string };
+export type TokenCounter = (messages: ChatMessage[], tools: ToolDefinition[], signal?: AbortSignal) => Promise<TokenCount>;
 export type EngineEvent = { type: string; [key: string]: unknown };
 export type RunStatus = 'completed' | 'partial' | 'awaiting_user' | 'failed' | 'cancelled' | 'exhausted';

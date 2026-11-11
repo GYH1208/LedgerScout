@@ -48,7 +48,7 @@
 
 2026 年 11 月 11 日在现有 Git 项目的 `feat/context-compaction` 分支增加上下文增强，前述首版验收保持历史记录。
 
-- 每个真实模型请求前检查消息和工具定义的字节与保守 Token 估算，预留输出空间；事件明确标记 `estimated`。本地没有安装 DeepSeek tokenizer，不声称精确复现供应商聊天模板。
+- 每个真实模型请求前检查消息和工具定义的字节与保守 Token 估算，预留输出空间；事件明确标记 `estimated`。该阶段尚未接入 DeepSeek tokenizer，后续本地编码器见下。
 - 供应商响应的实际 input/output/total 用量累计进入运行结果。摘要、重试同样计数；失败和未返回用量的请求计入 unknownRequests，已知用量合计不代表完整消耗。
 - 接近容量 80% 时，至多一次摘要请求压缩旧轮次，保留最近两轮和当前输入。摘要使用无工具请求，计入原有最多8次请求及超时；至少留两次任务请求预算。
 - 摘要以低权限背景消息传递，不能授权新地址或充当事实证据。程序另提供最多8个当前可用历史查询的范围、时间、状态与完整性索引，仍执行原有历史/刷新权限校验。
@@ -57,3 +57,15 @@
 此增强通过离线真实 Pi 循环、模拟供应商与文件持久化测试验证；本轮不新增真实供应商调用记录。官方说明将调用实际用量与文本估算区分，参考 [Token Usage](https://api-docs.deepseek.com/quick_start/token_usage/) 和 [DeepSeek tokenizer 文档](https://github.com/deepseek-ai/deepseek-recipe/blob/main/docs/tokenizer.md)。
 
 最终增强后全套80项测试通过，根目录与原数据模块类型检查通过。独立审阅发现的摘要过大导致后续请求失败问题已通过失败回归修复并复核；过大旧摘要暂不注入且保留原文，新摘要必须先通过真实任务容量校验。
+
+## 后续增强：官方离线模板计数
+
+已接入可选 deepseek-recipe==0.2.0 Python worker，固定资产 revision `935817c66f5d6e64838f419692545f06787e485f`。V4.1 / V4词表的SHA-256分别为官方记录的 `81f64d1248a68ce3663e07ab3ee48b851e5df0e32d27cb98e4c9a268151e8d99` / `97d2f31b020d18b5aee5c9b3d5b4efb10ea210f3fe3f7dffe3f1cd90542d6b19`，安装时与worker启动时验证。保留编码器与词表MIT许可证；资产在忽略的.runtime目录。
+
+HTTP请求与本地计数复用同一wire转换。worker只接收消息/工具，不继承API密钥；超时5秒，支持取消，CLI结束时关闭。未安装保持估算，已安装但失败会记录 `tokenizer_fallback`；本地结果标记 `local_tokenizer`，附encoding/revision，实际供应商usage继续单独记录。
+
+本机已完成安装和真实离线验证。两个模型模板的英文Hello为5 tokens、中文查询为8 tokens、控制token字面文本为16 tokens；工具调用/结果配对及真实Pi循环也经本地worker验证。没有发起模型推理或链上真实请求。
+
+`LEDGERSCOUT_TEST_TOKENIZER=1 npm test` 91/91通过，根和原数据模块类型检查通过。普通npm test跳过两项本地资产测试。独立审阅无重大问题；其指出的前置检查未记录fallback原因问题已用失败回归修复。
+
+依据：[官方计数与模板说明](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/docs/tokenizer.md)、[资产来源与许可证](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/static/tokenizers/README.md)。本地模板计数仍不承诺等于远端账单；未来服务端模板变化需要重新验证。

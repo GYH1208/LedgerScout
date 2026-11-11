@@ -1,4 +1,38 @@
-import type { ChatMessage, ToolDefinition } from './types.js';
+import { raceSignal } from '@ledgerscout/chain-data/control';
+import type { ChatMessage, TokenCounter, ToolDefinition } from './types.js';
+
+export type ContextMeasurement = { bytes: number; tokens: number; method: 'estimated' | 'local_tokenizer'; encoding?: string; revision?: string; fallback?: string };
+
+export async function measureContext(messages: ChatMessage[], tools: ToolDefinition[] = [], counter?: TokenCounter,
+  signal?: AbortSignal): Promise<ContextMeasurement> {
+  signal?.throwIfAborted();
+  const estimated = estimateContext(messages, tools);
+  if (!counter) return estimated;
+  try {
+    const count = await raceSignal(counter(messages, tools, signal), signal);
+    signal?.throwIfAborted();
+    if (!Number.isSafeInteger(count.tokens) || count.tokens < 1 || count.method !== 'local_tokenizer') throw new Error('Invalid token count');
+    return { ...count, bytes: estimated.bytes };
+  } catch {
+    signal?.throwIfAborted();
+    return { ...estimated, fallback: 'TOKENIZER_UNAVAILABLE' };
+  }
+}
+
+export async function fitContextAsync(messages: ChatMessage[], maxBytes: number, options: {
+  tools?: ToolDefinition[]; maxTokens: number; counter?: TokenCounter; signal?: AbortSignal;
+}): Promise<{ messages: ChatMessage[]; measurement: ContextMeasurement }> {
+  // First apply the cheap byte bound; then count only complete candidate rounds.
+  let selected = fitContext(messages, maxBytes, { tools: options.tools });
+  while (true) {
+    const measurement = await measureContext(selected, options.tools, options.counter, options.signal);
+    if (measurement.tokens <= options.maxTokens) return { messages: selected, measurement };
+    const first = selected.findIndex(m => m.role === 'user');
+    const second = selected.findIndex((m, i) => i > first && m.role === 'user');
+    if (first < 0 || second < 0) throw new Error('CONTEXT_TOO_LARGE: 当前输入、工具定义或工具上下文过大，请缩小问题或查询范围。');
+    selected = [...selected.slice(0, first), ...selected.slice(second)];
+  }
+}
 
 export function estimateContext(messages: ChatMessage[], tools: ToolDefinition[] = []) {
   const bytes = Buffer.byteLength(JSON.stringify({ messages, tools }), 'utf8');

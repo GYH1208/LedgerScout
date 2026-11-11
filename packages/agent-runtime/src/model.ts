@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { loadConfig, raceSignal, redact } from '@ledgerscout/chain-data';
-import type { ModelReply, RequestModel } from './types.js';
+import type { ModelReply, ModelRequest, RequestModel } from './types.js';
 export const workspaceRoot = fileURLToPath(new URL('../../../', import.meta.url));
 export class ModelError extends Error {
   constructor(message: string, readonly retryable = false) { super(message); }
@@ -33,6 +33,19 @@ async function responseText(response: Response, signal: AbortSignal): Promise<st
   } finally { await reader.cancel().catch(() => {}); }
 }
 
+/** Shared, secret-free body used by HTTP and the local prompt encoder. */
+export function toDeepSeekPayload(request: ModelRequest, model: string, maxTokens = 2000) {
+  const messages = request.messages.map(m => {
+    if (m.role === 'tool') return { role: 'tool', content: m.content, tool_call_id: m.callId };
+    if (m.role === 'assistant' && m.toolCalls?.length) return { role: 'assistant', content: m.content || null,
+      tool_calls: m.toolCalls.map(t => ({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments) } })) };
+    return { role: m.role, content: m.content };
+  });
+  return { model, messages, stream: false, max_tokens: Math.min(maxTokens, request.maxOutputTokens ?? maxTokens),
+    thinking: { type: 'disabled' },
+    ...(request.tools.length ? { tools: request.tools.map(t => ({ type: 'function', function: t })), tool_choice: 'auto' } : { tool_choice: 'none' }) };
+}
+
 export function createDeepSeekRequest(config: { key: string; model: string; maxOutputTokens?: number }, fetcher: typeof fetch = fetch): RequestModel {
   if (!config.key || /\s|^(YOUR_|replace|insert|paste|<)/i.test(config.key)) throw new Error('Missing or invalid DEEPSEEK_API_KEY; configure it in the local project .env');
   if (!['deepseek-flash', 'deepseek-v4-pro'].includes(config.model)) throw new Error('Unsupported DeepSeek model');
@@ -43,20 +56,12 @@ export function createDeepSeekRequest(config: { key: string; model: string; maxO
     if (request.maxOutputTokens !== undefined && (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 1)) throw new ModelError('Invalid model output limit');
     const timeout = AbortSignal.timeout(30000);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
-    const messages = request.messages.map(m => {
-      if (m.role === 'tool') return { role: 'tool', content: m.content, tool_call_id: m.callId };
-      if (m.role === 'assistant' && m.toolCalls?.length) return { role: 'assistant', content: m.content || null,
-        tool_calls: m.toolCalls.map(t => ({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments) } })) };
-      return { role: m.role, content: m.content };
-    });
     let response: Response; let text: string;
     try {
       response = await raceSignal(fetcher('https://api.deepseek.com/chat/completions', {
         method: 'POST', signal, redirect: 'error',
         headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: config.model, messages, stream: false, max_tokens: Math.min(maxTokens, request.maxOutputTokens ?? maxTokens),
-          thinking: { type: 'disabled' },
-          ...(request.tools.length ? { tools: request.tools.map(t => ({ type: 'function', function: t })), tool_choice: 'auto' } : { tool_choice: 'none' }) }),
+        body: JSON.stringify(toDeepSeekPayload(request, config.model, maxTokens)),
       }), signal);
       text = await responseText(response, signal);
     } catch (error) {

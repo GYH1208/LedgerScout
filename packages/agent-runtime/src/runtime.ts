@@ -5,12 +5,12 @@ import {
   type Config, type QueryResult, type QueryService,
 } from '@ledgerscout/chain-data';
 import { runPi } from './engine/pi.js';
-import { estimateContext, fitContext } from './context.js';
+import { fitContextAsync, measureContext } from './context.js';
 import { compactHistory, historyMessages } from './compaction.js';
 import { fallbackAnswer, parseAnswer, renderAnswer, type AnswerDraft } from './answer.js';
 import { RunJournal, SessionStore, validId } from './session.js';
 import { systemPrompt, toolDefinitions } from './tools.js';
-import type { ChatMessage, ModelRequest, ModelReply, RequestModel, RunStatus, RuntimeTool } from './types.js';
+import type { ChatMessage, ModelRequest, ModelReply, RequestModel, RunStatus, RuntimeTool, TokenCounter } from './types.js';
 
 export const defaultLimits = { maxModelRequests: 8, maxToolCalls: 12, maxHttpRequests: 32,
   modelTimeoutMs: 30000, toolTimeoutMs: 45000, runTimeoutMs: 120000, maxContextBytes: 24000,
@@ -21,7 +21,7 @@ export type RunResult = { sessionId: string; runId: string; directory: string; s
   tokenUsage: { source: 'provider'; inputTokens: number; outputTokens: number; totalTokens: number; reportedRequests: number; unknownRequests: number } };
 type Options = { input: string; config: Config; request: RequestModel; outputDirectory: string;
   sessionId?: string; signal?: AbortSignal; fetch?: typeof fetch; secrets?: string[];
-  limits?: Partial<Limits>; onEvent?: (event: { type: string; [key: string]: unknown }) => void };
+  counter?: TokenCounter; limits?: Partial<Limits>; onEvent?: (event: { type: string; [key: string]: unknown }) => void };
 const activeSessions = new Set<string>();
 
 export async function runAgent(options: Options): Promise<RunResult> {
@@ -126,14 +126,28 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
       },
     }));
     if (!draft) {
+      let tokenizerFailureRecorded = false;
+      const counter: TokenCounter | undefined = options.counter ? async (messages, tools, countSignal) => {
+        try { return await options.counter!(messages, tools, countSignal); }
+        catch (error) {
+          if (!signal.aborted && !tokenizerFailureRecorded) {
+            tokenizerFailureRecorded = true;
+            result.warnings.push('本地Token计数不可用，已回退保守估算。');
+            await record('tokenizer_fallback', { code: 'TOKENIZER_UNAVAILABLE' });
+          }
+          throw error;
+        }
+      } : undefined;
       const requestModel = async (request: ModelRequest, purpose: 'task' | 'summary'): Promise<ModelReply> => {
         for (let attempt = 0; attempt <= (purpose === 'task' ? 1 : 0); attempt++) {
           signal.throwIfAborted();
           if (result.counts.models >= limits.maxModelRequests) budget('Model request budget exhausted');
           const finalOnly = request.finalOnly || result.counts.models === limits.maxModelRequests - 1;
           const selectedTools = finalOnly ? [] : request.tools;
-          const selectedMessages = fitContext(request.messages, limits.maxContextBytes, { tools: selectedTools, maxTokens: inputTokens });
-          const estimate = estimateContext(selectedMessages, selectedTools);
+          const fitted = await fitContextAsync(request.messages, limits.maxContextBytes, { tools: selectedTools, maxTokens: inputTokens, counter, signal });
+          const selectedMessages = fitted.messages;
+          const estimate = fitted.measurement;
+          if (estimate.fallback && !result.warnings.some(w => w.includes('本地Token'))) result.warnings.push('本地Token计数不可用，已回退保守估算。');
           await record('context_prepared', { purpose, ...estimate, droppedMessages: request.messages.length - selectedMessages.length });
           result.counts.models++;
           result.tokenUsage.unknownRequests++;
@@ -171,12 +185,12 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
       const current: ChatMessage = { role: 'user', content: input };
       const evidenceMessages: ChatMessage[] = evidence.length ? [{ role: 'assistant', content: '可用历史证据索引（旧查询未刷新）：' + JSON.stringify(evidence) }] : [];
       const frame = (summary?: string): ChatMessage[] => [system, ...historyMessages([], summary), ...evidenceMessages, current];
-      const fit = (messages: ChatMessage[]) => fitContext(messages, limits.maxContextBytes, { tools: toolDefinitions, maxTokens: inputTokens });
+      const fit = (messages: ChatMessage[]) => fitContextAsync(messages, limits.maxContextBytes, { tools: toolDefinitions, maxTokens: inputTokens, counter, signal });
       // A current request which cannot fit by itself must not spend a summary call.
-      fit(frame());
+      await fit(frame());
       let contextSummary = store.data.summary;
       if (contextSummary) {
-        try { fit(frame(contextSummary)); }
+        try { await fit(frame(contextSummary)); }
         catch {
           contextSummary = undefined;
           result.warnings.push('已有历史摘要超过当前容量，本轮暂不注入；磁盘摘要仍保留。');
@@ -185,14 +199,14 @@ async function execute(options: Options, sessionId: string): Promise<RunResult> 
       }
       const buildMessages = (): ChatMessage[] => [system, ...historyMessages([], contextSummary), ...evidenceMessages,
         ...historyMessages(store.data.turns), current];
-      const size = estimateContext(buildMessages(), toolDefinitions);
+      const size = await measureContext(buildMessages(), toolDefinitions, counter, signal);
       if (store.data.turns.length > 2 && result.counts.models <= limits.maxModelRequests - 3 &&
         (size.bytes > limits.maxContextBytes * 0.8 || size.tokens > inputTokens * 0.8)) {
         try {
           const compacted = await compactHistory({ turns: store.data.turns, summary: store.data.summary,
-            maxBytes: limits.maxContextBytes, maxTokens: inputTokens, summarize: r => requestModel(r, 'summary') });
+            maxBytes: limits.maxContextBytes, maxTokens: inputTokens, measure: m => measureContext(m, [], counter, signal), summarize: r => requestModel(r, 'summary') });
           signal.throwIfAborted();
-          fit(frame(compacted.summary));
+          await fit(frame(compacted.summary));
           store.data.turns = compacted.turns; store.data.summary = compacted.summary;
           contextSummary = compacted.summary;
           await record('context_compacted', { rounds: compacted.compacted });
