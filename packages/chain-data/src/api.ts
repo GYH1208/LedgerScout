@@ -1,6 +1,7 @@
 import type { Config } from './config.js';
 import { ApiError, Transport } from './http.js';
 import type { BlockTime } from './time.js';
+import { isEnsEthCall } from './ens-codec.js';
 
 export const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -32,7 +33,8 @@ export class Api {
   constructor(private readonly cfg: Config, private readonly transport: Transport) {}
   async rpc(method: string, params: unknown[]): Promise<unknown> {
     if (!this.cfg.alchemyKey) throw new ApiError('Missing ALCHEMY_API_KEY; set it in local .env');
-    ensure(['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'eth_getBlockByNumber', 'alchemy_getAssetTransfers'].includes(method), 'read-only method required');
+    ensure(['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'eth_getBlockByNumber', 'alchemy_getAssetTransfers'].includes(method) ||
+      method === 'eth_call' && isEnsEthCall(params), 'read-only method required');
     const id = ++this.id;
     return this.transport.request(method, new URL(`https://eth-mainnet.g.alchemy.com/v2/${encodeURIComponent(this.cfg.alchemyKey)}`), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -42,7 +44,7 @@ export class Api {
       if (isObject(body.error)) {
         const message = typeof body.error.message === 'string' ? body.error.message : 'unspecified error';
         throw new ApiError(`Alchemy RPC ${String(body.error.code)}: ${message}`,
-          body.error.code === 429 || rateLimited(message));
+          body.error.code === 429 || rateLimited(message), typeof body.error.data === 'string' ? body.error.data : undefined);
       }
       ensure(body.id === id && Object.hasOwn(body, 'result') && !Object.hasOwn(body, 'error'), 'RPC id/result mismatch');
       return body.result;

@@ -1,4 +1,4 @@
-import type { TimeWindow } from '@ledgerscout/chain-data';
+import { maskEnsNames, type TimeWindow } from '@ledgerscout/chain-data';
 const day = 86400; const offset = 8 * 3600;
 const error = () => ({ error: '日期范围不明确或不受支持。请使用最近N小时/天/周、今天/昨天、自然周/月或 YYYY-MM-DD 起止日期；日历日期按北京时间，日期不能与显式区块同时指定。' });
 function numeric(text: string): number {
@@ -13,6 +13,7 @@ function numeric(text: string): number {
   return english[text.toLowerCase()] ?? NaN;
 }
 export function parseDateWindow(input: string, now: Date): { window?: TimeWindow; error?: string } {
+  input = maskEnsNames(input);
   input = input.replace(/\b[qsrm]_[A-Za-z0-9_-]+\b/g, '').replace(/0x[0-9a-fA-F]+/g, '');
   input = input.replace(/(?:最近|过去|近)\s*[零〇一二两三四五六七八九十百\d]+\s*(?:条|笔)/g, '');
   const absolute = [...input.matchAll(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?/g)];

@@ -7,3 +7,4 @@ export * from './control.js';
 export * from './queries.js';
 export * from './time.js';
 export * from './flows.js';
+export * from './ens.js';

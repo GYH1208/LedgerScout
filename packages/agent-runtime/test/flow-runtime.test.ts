@@ -125,3 +125,18 @@ for (const wording of ['分析该地址按币种的流入、流出和净额', 'A
     } finally { await h.close(); }
   });
 }
+test('flow raw-detail requests keep truthful pagination without overflowing analysis context', async () => {
+  const h = await harness(false, true); let turn = 0;
+  try {
+    const r = await h.run({ input: `分析 ${owner} 资金流。背景${'a'.repeat(1000)}`, request: async req => {
+      turn++;
+      if (turn === 1) return { content: '', toolCalls: [{ id: 'transfers', name: 'list_asset_transfers', arguments: { address: owner } }] };
+      if (turn === 2) return { content: '', toolCalls: [{ id: 'analysis', name: 'analyze_asset_flows', arguments: { queryId: id(req) } }] };
+      if (turn === 3) return { content: '', toolCalls: [{ id: 'raw', name: 'read_query_evidence', arguments: { queryId: id(req), collection: 'incoming', offset: 0, limit: 20 } }] };
+      const page = JSON.parse(req.messages.filter(m => m.role === 'tool').at(-1)!.content);
+      assert.equal(page.records.length, 2); assert.equal(page.totalAvailable, 5); assert.equal(page.hasMore, true);
+      return final(id(req));
+    } });
+    assert.equal(r.status, 'completed'); assert.equal(r.queries[0]?.data.incoming.count, 5);
+  } finally { await h.close(); }
+});

@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { redact, validTimeWindow, validResolvedWindow, sameTimeWindow, type TimeWindow, type QueryResult } from '@ledgerscout/chain-data';
+import { redact, validTimeWindow, validResolvedWindow, sameTimeWindow, normalizeEnsName, maskEnsNames, type TimeWindow, type QueryResult } from '@ledgerscout/chain-data';
 import { atomicJson, validId } from './session.js';
 import type { ChatMessage, ModelReply } from './types.js';
+import { loadEnsProofs, type EnsReference } from './ens.js';
 
 export type Checkpoint = {
   version: 1; sessionId: string; runId: string; input: string; addresses: string[]; lineage: string[];
@@ -14,6 +15,7 @@ export type Checkpoint = {
   cache: [string, string][]; failures: [string, number][]; repairUsed: boolean;
   elapsedMs: number; reservedMs: number; closed: boolean; resumedBy?: string;
   timeWindow?: TimeWindow;
+  ensNames?: string[]; ensRefs?: EnsReference[]; ensReady?: boolean; ensLiteralAddresses?: string[];
 };
 const hash = (q: QueryResult) => createHash('sha256').update(JSON.stringify(q)).digest('hex');
 const integer = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
@@ -44,7 +46,12 @@ export class CheckpointStore {
         if (c.resumedBy && validId(c.resumedBy)) throw new Error(`Run already resumed by ${c.resumedBy}`);
         invalid();
       }
-      if (typeof c.input !== 'string' || !c.input || !Array.isArray(c.addresses) || !c.addresses.length ||
+      const hasEns = c.ensNames !== undefined;
+      if (hasEns && (!Array.isArray(c.ensNames) || !c.ensNames.length || c.ensNames.length > 4 || new Set(c.ensNames).size !== c.ensNames.length ||
+        c.ensNames.some(n => normalizeEnsName(n) !== n) || !Array.isArray(c.ensRefs) || typeof c.ensReady !== 'boolean')) invalid();
+      if (c.ensLiteralAddresses !== undefined && (!hasEns || !Array.isArray(c.ensLiteralAddresses) || c.ensLiteralAddresses.some(a => !/^0x[0-9a-fA-F]{40}$/.test(a)))) invalid();
+      if (!hasEns && (c.ensRefs !== undefined || c.ensReady !== undefined)) invalid();
+      if (typeof c.input !== 'string' || !c.input || !Array.isArray(c.addresses) || !c.addresses.length && !(hasEns && c.ensReady === false) ||
         c.addresses.some(a => typeof a !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(a)) ||
         !Array.isArray(c.lineage) || c.lineage.length > 32 || !c.lineage.includes(runId) || c.lineage.some(id => !validId(id) || !/^r_/.test(id))) invalid();
       if (!c.limits || Object.keys(c.limits).length !== Object.keys(caps).length || Object.entries(caps).some(([k, cap]) => !integer(c.limits[k]) || c.limits[k]! < 1 || c.limits[k]! > cap)) invalid();
@@ -88,7 +95,18 @@ export class CheckpointStore {
         if (c.lineage.includes(q.runId) && (!c.timeWindow || !sameTimeWindow(w, c.timeWindow) || w.snapshot !== c.snapshot || !c.lineage.includes(source.runId))) invalid();
         if (q.status !== 'error' && (q.range.startBlock !== w.startBlock || q.range.endBlock !== w.endBlock)) invalid();
       }
-      return { state: c, queries, path };
+      const ensProofs = hasEns ? await loadEnsProofs(base, sessionId, c.lineage, c.ensRefs!) : [];
+      if (hasEns) {
+        if (c.ensRefs!.length > c.counts.tools || ensProofs.some(p => !c.ensNames!.includes(p.name) || p.status === 'resolved' && p.blockNumber !== c.snapshot)) invalid();
+        const resolved = ensProofs.filter(p => p.status === 'resolved');
+        if (c.ensReady && c.ensNames!.some(n => !resolved.some(p => p.name === n))) invalid();
+        const explicitInput = maskEnsNames(c.input).match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g) ?? [];
+        const explicit = c.ensLiteralAddresses ?? explicitInput;
+        if (explicitInput.length && (new Set(explicitInput.map(a => a.toLowerCase())).size !== explicit.length || explicit.some(a => !explicitInput.some(x => x.toLowerCase() === a.toLowerCase())))) invalid();
+        const authorized = new Set([...explicit, ...(c.ensReady ? resolved.map(p => p.address!) : [])].map(a => a.toLowerCase()));
+        if (c.addresses.length !== authorized.size || c.addresses.some(a => !authorized.has(a.toLowerCase()))) invalid();
+      }
+      return { state: c, queries, path, ensProofs };
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Run already resumed by ')) throw error;
       return invalid();

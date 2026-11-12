@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Config } from './config.js';
 import { Api } from './api.js';
 import { Checks } from './checks.js';
-import { Transport, RequestScheduler, type RequestScope } from './http.js';
+import { Transport, providerScheduler, type RequestScheduler, type RequestScope } from './http.js';
 import { Results, redact } from './output.js';
 import { resolveTimeWindow, validTimeWindow, validResolvedWindow, sameTimeWindow, type TimeWindow, type ResolvedTimeWindow } from './time.js';
 import { analyzeFlows, type FlowAnalysis } from './flows.js';
@@ -20,7 +20,7 @@ export type QueryResult = {
 };
 export type QueryContext = RequestScope & { sessionId: string; runId: string; toolCallId: string };
 export const isQueryKind = (name: string): name is QueryKind => ['get_eth_balance', 'list_normal_transactions', 'list_asset_transfers'].includes(name);
-const sharedScheduler = new RequestScheduler();
+const sharedScheduler = providerScheduler;
 const invalid = (): never => { throw new Error('INVALID_ARGUMENT: invalid or unsupported query arguments'); };
 
 export function validateQuery(name: string, args: Record<string, unknown>) {

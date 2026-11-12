@@ -2,7 +2,7 @@ import type { Config } from './config.js';
 import { delay, raceSignal } from './control.js';
 
 export class ApiError extends Error {
-  constructor(message: string, readonly retryable = false) { super(message); }
+  constructor(message: string, readonly retryable = false, readonly rpcData?: string) { super(message); }
 }
 export type RequestScope = { signal?: AbortSignal | undefined; beforeRequest?: (() => void | Promise<void>) | undefined };
 type Dependencies = {
@@ -87,3 +87,4 @@ export class Transport {
     throw new ApiError('Retry budget exhausted');
   }
 }
+export const providerScheduler = new RequestScheduler();
