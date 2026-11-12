@@ -5,3 +5,4 @@ export * from './checks.js';
 export * from './output.js';
 export * from './control.js';
 export * from './queries.js';
+export * from './time.js';

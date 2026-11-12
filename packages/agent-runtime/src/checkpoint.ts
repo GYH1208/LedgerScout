@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { redact, type QueryResult } from '@ledgerscout/chain-data';
+import { redact, validTimeWindow, validResolvedWindow, sameTimeWindow, type TimeWindow, type QueryResult } from '@ledgerscout/chain-data';
 import { atomicJson, validId } from './session.js';
 import type { ChatMessage, ModelReply } from './types.js';
 
@@ -13,6 +13,7 @@ export type Checkpoint = {
   queryRefs: { runId: string; queryId: string; hash: string }[]; snapshot?: number;
   cache: [string, string][]; failures: [string, number][]; repairUsed: boolean;
   elapsedMs: number; reservedMs: number; closed: boolean; resumedBy?: string;
+  timeWindow?: TimeWindow;
 };
 const hash = (q: QueryResult) => createHash('sha256').update(JSON.stringify(q)).digest('hex');
 const integer = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
@@ -62,6 +63,7 @@ export class CheckpointStore {
       if (!c.tokenUsage || c.tokenUsage.source !== 'provider' || !['inputTokens', 'outputTokens', 'totalTokens', 'reportedRequests', 'unknownRequests'].every(k => integer((c.tokenUsage as any)[k])) || c.tokenUsage.reportedRequests + c.tokenUsage.unknownRequests !== c.counts.models) invalid();
       if (!Number.isFinite(c.elapsedMs) || c.elapsedMs < 0 || !integer(c.reservedMs) || c.reservedMs > c.limits.runTimeoutMs! ||
         c.snapshot !== undefined && !integer(c.snapshot) || typeof c.repairUsed !== 'boolean') invalid();
+      if (c.timeWindow !== undefined && !validTimeWindow(c.timeWindow)) invalid();
       if (!Array.isArray(c.messages) || !c.messages.length || c.messages.some(m => !['user', 'assistant', 'system', 'tool'].includes(m.role) || typeof m.content !== 'string')) invalid();
       if (c.reply && (typeof c.reply.content !== 'string' || c.reply.toolCalls && (!Array.isArray(c.reply.toolCalls) || c.reply.toolCalls.length > 128 || c.reply.toolCalls.some(t => typeof t.id !== 'string' || typeof t.name !== 'string' || !t.arguments || typeof t.arguments !== 'object' || Array.isArray(t.arguments))))) invalid();
       if (!Array.isArray(c.completedTools) || c.completedTools.length > 128 || c.completedTools.some(t => typeof t.id !== 'string' || typeof t.content !== 'string' || typeof t.isError !== 'boolean' || !c.reply?.toolCalls?.some(call => call.id === t.id))) invalid();
@@ -77,6 +79,15 @@ export class CheckpointStore {
         queries.push(q);
       }
       if (c.cache.some(([, id]) => !queries.some(q => q.queryId === id && q.status !== 'error' && c.lineage.includes(q.runId)))) invalid();
+      for (const q of queries) {
+        const w = q.range.timeWindow;
+        if (!w) continue;
+        const source = queries.find(source => source.queryId === w.sourceQueryId) ?? invalid();
+        if (!validResolvedWindow(w) || !source?.range.timeWindow || source.queryId !== source.range.timeWindow.sourceQueryId ||
+          JSON.stringify(source.range.timeWindow) !== JSON.stringify(w)) invalid();
+        if (c.lineage.includes(q.runId) && (!c.timeWindow || !sameTimeWindow(w, c.timeWindow) || w.snapshot !== c.snapshot || !c.lineage.includes(source.runId))) invalid();
+        if (q.status !== 'error' && (q.range.startBlock !== w.startBlock || q.range.endBlock !== w.endBlock)) invalid();
+      }
       return { state: c, queries, path };
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Run already resumed by ')) throw error;

@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
 import { ApiError, Transport } from './http.js';
+import type { BlockTime } from './time.js';
 
 export const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -31,7 +32,7 @@ export class Api {
   constructor(private readonly cfg: Config, private readonly transport: Transport) {}
   async rpc(method: string, params: unknown[]): Promise<unknown> {
     if (!this.cfg.alchemyKey) throw new ApiError('Missing ALCHEMY_API_KEY; set it in local .env');
-    ensure(['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'alchemy_getAssetTransfers'].includes(method), 'read-only method required');
+    ensure(['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'eth_getBlockByNumber', 'alchemy_getAssetTransfers'].includes(method), 'read-only method required');
     const id = ++this.id;
     return this.transport.request(method, new URL(`https://eth-mainnet.g.alchemy.com/v2/${encodeURIComponent(this.cfg.alchemyKey)}`), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -51,6 +52,31 @@ export class Api {
     const block = BigInt(quantity(await this.rpc('eth_blockNumber', [])));
     ensure(block <= BigInt(Number.MAX_SAFE_INTEGER), 'block exceeds integer range');
     return Number(block);
+  }
+  async blockTime(number: number): Promise<BlockTime> {
+    ensure(Number.isSafeInteger(number) && number >= 0, 'invalid block number');
+    const block = await this.rpc('eth_getBlockByNumber', [`0x${number.toString(16)}`, false]);
+    ensure(isObject(block), 'missing boundary block');
+    const height = BigInt(quantity(block.number)); const timestamp = BigInt(quantity(block.timestamp));
+    ensure(height === BigInt(number) && timestamp <= BigInt(Number.MAX_SAFE_INTEGER), 'invalid boundary block');
+    return { number, timestamp: Number(timestamp) };
+  }
+  async blockByTime(timestamp: number): Promise<number> {
+    ensure(Number.isSafeInteger(timestamp) && timestamp >= 0, 'invalid timestamp');
+    if (!this.cfg.etherscanKey) throw new ApiError('Missing ETHERSCAN_API_KEY; set it in local .env');
+    const url = new URL('https://api.etherscan.io/v2/api');
+    url.search = new URLSearchParams({ chainid: '1', module: 'block', action: 'getblocknobytime',
+      timestamp: String(timestamp), closest: 'before', apikey: this.cfg.etherscanKey }).toString();
+    return this.transport.request(`etherscan-block-by-time-${timestamp}`, url, { method: 'GET' }, body => {
+      ensure(isObject(body) && typeof body.message === 'string', 'invalid Etherscan time envelope');
+      if (body.status !== '1') {
+        const message = `${body.message}: ${typeof body.result === 'string' ? body.result : 'unexpected result'}`;
+        throw new ApiError(`Etherscan: ${message}`, rateLimited(message));
+      }
+      ensure(body.message === 'OK' && decimal(body.result), 'invalid timestamp block result');
+      const block = Number(body.result); ensure(Number.isSafeInteger(block) && block >= 0, 'invalid timestamp block number');
+      return block;
+    });
   }
   async txPage(page: number, endBlock: number): Promise<Transaction[]> {
     if (!this.cfg.etherscanKey) throw new ApiError('Missing ETHERSCAN_API_KEY; set it in local .env');

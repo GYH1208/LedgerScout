@@ -91,10 +91,10 @@ test('user cancellation records one cancelled terminal state', async () => {
   } finally { await h.close(); }
 });
 
-test('missing addresses and date windows are clarified without model or data calls', async () => {
+test('missing addresses and unsupported date windows are clarified without model or data calls', async () => {
   const h = await setup();
   try {
-    for (const input of ['查一下余额', '查 vitalik.eth', `查 ${address} 最近七天的转账`, `查 ${address} 2026-10-01 至 2026-10-31 的转账`]) {
+    for (const input of ['查一下余额', '查 vitalik.eth', `查 ${address} 最近半年的转账`, `查 ${address} 2026-02-29 的转账`]) {
       const r = await h.run(async () => { throw new Error('must not call'); }, { input });
       assert.equal(r.status, 'awaiting_user'); assert.equal(r.counts.models, 0);
     }

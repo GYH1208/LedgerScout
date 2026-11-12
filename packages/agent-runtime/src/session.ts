@@ -44,7 +44,25 @@ export class SessionStore {
   }
   async save() {
     this.data.turns = this.data.turns.slice(-20);
-    this.data.queries = this.data.queries.slice(-32);
+    const available = new Map(this.data.queries.map(q => [q.queryId, q]));
+    const selected = new Map(this.data.queries.slice(-32).map(q => [q.queryId, q]));
+    for (const q of [...selected.values()]) {
+      const sourceId = q.range.timeWindow?.sourceQueryId;
+      if (!sourceId || selected.has(sourceId)) continue;
+      const source = available.get(sourceId);
+      if (source) selected.set(sourceId, source);
+      else selected.delete(q.queryId); // A legacy orphan is not reusable evidence.
+    }
+    while (selected.size > 32) {
+      // Retain source queries needed by other results, sacrificing an older
+      // unrelated query to keep the evidence set bounded and self-contained.
+      const dependencies = new Set([...selected.values()].filter(q => q.range.timeWindow?.sourceQueryId !== q.queryId).map(q => q.range.timeWindow?.sourceQueryId));
+      const candidates = this.data.queries.filter(q => selected.has(q.queryId) && !dependencies.has(q.queryId));
+      const remove = candidates.find(q => !q.range.timeWindow) ?? candidates[0];
+      if (!remove) break;
+      selected.delete(remove.queryId);
+    }
+    this.data.queries = this.data.queries.filter(q => selected.has(q.queryId));
     await atomicJson(join(this.directory, 'session.json'), redact(this.data, this.secrets));
   }
 }

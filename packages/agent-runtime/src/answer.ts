@@ -47,7 +47,10 @@ function claimText(claim: Claim, q: QueryResult): string {
 }
 function section(q: QueryResult, claims: Claim[]) {
   const range = q.range.blockNumber !== undefined ? `区块 ${q.range.blockNumber}` : `区块 ${q.range.startBlock ?? '?'}–${q.range.endBlock ?? '?'}`;
-  const header = `Ethereum Mainnet | 地址 ${q.address}\n${range} | 获取时间 ${q.fetchedAt}\n证据：${q.queryId}`;
+  const w = q.range.timeWindow ?? q.range.requestedTimeWindow;
+  const time = (n: number) => new Date((n + 8 * 3600) * 1000).toISOString().replace('T', ' ').replace('.000Z', '');
+  const window = w ? `\n目标时间：${time(w.startTimestamp)} 至 ${time(w.endTimestamp)}（北京时间 Asia/Shanghai，含首尾秒）${w.clipped ? '；末端已截到查询时刻' : ''}` : '';
+  const header = `Ethereum Mainnet | 地址 ${q.address}\n${range} | 获取时间 ${q.fetchedAt}${window}\n证据：${q.queryId}`;
   if (q.status === 'error') return `${header}\n查询失败：${q.error?.code ?? 'ERROR'} ${q.error?.message ?? ''}`;
   const facts = claims.map(c => claimText(c, q));
   const completeness = q.completeness.complete ? '该查询声明范围已遍历完成。' : '仅获取部分历史，未覆盖完整查询范围。';

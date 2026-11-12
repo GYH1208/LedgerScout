@@ -4,6 +4,34 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const a = '0x' + '1'.repeat(40); const b = '0x' + '2'.repeat(40);
+
+for (const [message, expected] of [
+  ['Etherscan: NOTOK: credits exhausted', 'QUOTA_EXHAUSTED'],
+  ['Alchemy RPC -32000: monthly capacity limit exceeded', 'QUOTA_EXHAUSTED'],
+  ['Etherscan: NOTOK: daily limit reached', 'QUOTA_EXHAUSTED'],
+  ['Response validation: repeated pageKey', 'PROVIDER_RESPONSE_INVALID'],
+  ['Response validation: invalid pageKey', 'PROVIDER_RESPONSE_INVALID'],
+  ['Response validation: repeated transaction page', 'PROVIDER_RESPONSE_INVALID'],
+  ['Etherscan: NOTOK: Max rate limit reached', 'RATE_LIMIT'],
+  ['Alchemy RPC -32005: compute units per second limit exceeded', 'RATE_LIMIT'],
+  ['HTTP 429', 'RATE_LIMIT'],
+  ['Etherscan: NOTOK: Invalid API Key', 'AUTH_ERROR'],
+  ['API Key missing or invalid', 'AUTH_ERROR'],
+  ['Missing ALCHEMY_API_KEY; set it in local .env', 'AUTH_ERROR'],
+  ['HTTP 403', 'AUTH_ERROR'],
+  ['Ethereum Mainnet is not enabled for this app', 'AUTH_ERROR'],
+  ['HTTP request budget exhausted', 'BUDGET_EXHAUSTED'],
+  ['Runtime time budget exhausted', 'BUDGET_EXHAUSTED'],
+  ['Operation cancelled', 'CANCELLED'],
+  ['Request timeout', 'TIMEOUT'],
+  ['Network or response read failure', 'NETWORK_ERROR'],
+  ['EVIDENCE_WRITE_FAILED: unable to persist query evidence', 'EVIDENCE_WRITE_FAILED'],
+] as const) {
+  test(`diagnostic code: ${message}`, async () => {
+    const { errorCode } = await import('../src/queries.js');
+    assert.equal(errorCode(new Error(message)), expected);
+  });
+}
 async function harness(handler?: (url: URL, body: any) => unknown) {
   const { createQueryService, parseConfig } = await import('../src/index.js');
   const dir = await mkdtemp(join(tmpdir(), 'ledger-query-')); const calls: any[] = [];
@@ -80,5 +108,20 @@ test('later page failures remain partial and evidence reading is scoped and boun
     assert.throws(() => h.service.readEvidence(q.queryId, 'transactions', 0, 21));
     const other = await harness();
     try { assert.throws(() => other.service.readEvidence(q.queryId, 'transactions', 0, 1)); } finally { await other.close(); }
+  } finally { await h.close(); }
+});
+
+test('provider quota after a successful page stays partial with a quota diagnostic', async () => {
+  const h = await harness((url, body) => {
+    if (body.method) return { jsonrpc: '2.0', id: body.id, result: body.method === 'eth_chainId' ? '0x1' : '0xa' };
+    if (url.searchParams.get('page') === '2') return { status: '0', message: 'NOTOK', result: 'credits exhausted' };
+    return { status: '1', message: 'OK', result: [{ hash: '0x' + 'a'.repeat(64), blockNumber: '10', timeStamp: '1', from: a, to: b, value: '1', isError: '0' }] };
+  });
+  try {
+    const q = await h.service.query('list_normal_transactions', { address: a, pageSize: 1 }, h.context);
+    assert.equal(q.status, 'partial'); assert.equal(q.data.count, 1);
+    assert.equal(q.error?.code, 'QUOTA_EXHAUSTED'); assert.equal(q.completeness.complete, false);
+    const saved = JSON.parse(await readFile(join(h.dir, q.queryId, 'query.json'), 'utf8'));
+    assert.equal(saved.error.code, 'QUOTA_EXHAUSTED');
   } finally { await h.close(); }
 });
