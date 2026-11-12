@@ -125,3 +125,31 @@ test('provider quota after a successful page stays partial with a quota diagnost
     assert.equal(saved.error.code, 'QUOTA_EXHAUSTED');
   } finally { await h.close(); }
 });
+test('transfer analysis is durable while full report stays outside model record previews', async () => {
+  const h = await harness((_url, body) => ({ jsonrpc: '2.0', id: body.id, result: body.method === 'eth_chainId' ? '0x1' :
+    body.method === 'eth_blockNumber' ? '0xa' : { transfers: [] } }));
+  try {
+    const q = await h.service.query('list_asset_transfers', { address: a }, h.context);
+    const saved = JSON.parse(await readFile(join(h.dir, q.queryId, 'query.json'), 'utf8'));
+    assert.equal(saved.data.flowAnalysis.sourceQueryId, q.queryId);
+    assert.deepEqual(saved.data.flowAnalysis.assets, []);
+    const preview = h.service.preview(q); assert.ok(!('flowAnalysis' in preview.data));
+    assert.equal(preview.data.flowAnalysisAvailable, true);
+  } finally { await h.close(); }
+});
+for (const acrossPages of [false, true]) test(`conflicting transfer IDs survive normalization (across pages=${acrossPages})`, async () => {
+  const wire = (value: string) => ({ uniqueId: 'duplicate', hash: '0x' + 'a'.repeat(64), blockNum: '0xa',
+    from: b, to: a, category: 'external', asset: 'ETH', value: 1, rawContract: { value, decimal: '0x12', address: null } });
+  const h = await harness((_url, body) => {
+    if (body.method !== 'alchemy_getAssetTransfers') return { jsonrpc: '2.0', id: body.id, result: body.method === 'eth_chainId' ? '0x1' : '0xa' };
+    const incoming = body.params[0].toAddress === a; const second = !!body.params[0].pageKey;
+    return { jsonrpc: '2.0', id: body.id, result: !incoming ? { transfers: [] } : acrossPages ?
+      { transfers: [wire(second ? '0x2' : '0x1')], ...(second ? {} : { pageKey: 'second' }) } : { transfers: [wire('0x1'), wire('0x2')] } };
+  });
+  try {
+    const q = await h.service.query('list_asset_transfers', { address: a }, h.context);
+    assert.deepEqual(q.data.flowAnalysis.excludedRecordIds, ['duplicate']);
+    assert.equal(q.data.flowAnalysis.assets.length, 0);
+    assert.ok(q.data.flowAnalysis.issues.some((i: any) => i.code === 'CONFLICTING_ID'));
+  } finally { await h.close(); }
+});

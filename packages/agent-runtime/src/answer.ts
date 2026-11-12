@@ -1,7 +1,8 @@
 import { formatWei, type QueryResult } from '@ledgerscout/chain-data';
+import { renderFlowSummary, renderCounterparties } from './flow-answer.js';
 type Claim = { queryId: string; field: string; recordId?: string };
 export type AnswerDraft = { kind: 'answer' | 'clarification' | 'unsupported'; queryIds?: string[]; claims?: Claim[]; message?: string; interpretation?: string };
-const fields = new Set(['eth', 'wei', 'count', 'incoming.count', 'outgoing.count', 'categories', 'transaction']);
+const fields = new Set(['eth', 'wei', 'count', 'incoming.count', 'outgoing.count', 'categories', 'transaction', 'flow_summary', 'counterparties']);
 export function parseAnswer(text: string, queries: QueryResult[]): AnswerDraft {
   const source = text.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
   const value = JSON.parse(source) as AnswerDraft;
@@ -23,6 +24,8 @@ export function parseAnswer(text: string, queries: QueryResult[]): AnswerDraft {
 }
 function claimText(claim: Claim, q: QueryResult): string {
   if (q.status === 'error') throw new Error('Failed query cannot supply facts');
+  if (claim.field === 'flow_summary') return renderFlowSummary(q);
+  if (claim.field === 'counterparties') return renderCounterparties(q);
   if (claim.field === 'eth' || claim.field === 'wei') {
     if (q.kind !== 'get_eth_balance' || typeof q.data.wei !== 'string' || !/^\d+$/.test(q.data.wei) || formatWei(q.data.wei) !== q.data.eth) throw new Error('Invalid balance evidence');
     return claim.field === 'eth' ? `ETH 余额：${q.data.eth} ETH` : `ETH 余额：${q.data.wei} wei`;
@@ -63,9 +66,10 @@ export function renderAnswer(draft: AnswerDraft, queries: QueryResult[]): string
   return selected.map(q => section(q, draft.claims!.filter(c => c.queryId === q.queryId))).join('\n\n') +
     (draft.interpretation ? `\n\n解释与假设：${draft.interpretation}` : '');
 }
-export function fallbackAnswer(queries: QueryResult[], reason = ''): string {
+export function fallbackAnswer(queries: QueryResult[], reason = '', includeFlows = false): string {
   const text = queries.map(q => {
-    const fields = q.kind === 'get_eth_balance' ? ['eth', 'wei'] : q.kind === 'list_normal_transactions' ? ['count'] : ['incoming.count', 'outgoing.count', 'categories'];
+    const fields = q.kind === 'get_eth_balance' ? ['eth', 'wei'] : q.kind === 'list_normal_transactions' ? ['count'] :
+      includeFlows ? ['flow_summary', 'counterparties'] : ['incoming.count', 'outgoing.count', 'categories'];
     return section(q, q.status === 'error' ? [] : fields.map(field => ({ queryId: q.queryId, field })));
   }).join('\n\n');
   return [text, reason].filter(Boolean).join('\n\n') || '未取得可用于回答的数据。';

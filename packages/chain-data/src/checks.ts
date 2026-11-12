@@ -1,5 +1,9 @@
 import type { Config } from './config.js';
-import { Api, ensure, formatWei, quantity, type Direction } from './api.js';
+import { Api, ensure, formatWei, quantity, type Direction, type Transfer } from './api.js';
+import { flowRecordFingerprint } from './flows.js';
+const normalizeTransfer = (tx: Transfer, direction: Direction) => ({ id: tx.uniqueId, hash: tx.hash, blockNumber: BigInt(tx.blockNum).toString(),
+  direction, from: tx.from, to: tx.to, category: tx.category, asset: tx.asset, approximateValue: tx.value,
+  rawValue: tx.rawContract.value, decimalsHex: tx.rawContract.decimal, tokenAddress: tx.rawContract.address });
 
 export class Checks {
   constructor(private readonly cfg: Config, private readonly api: Api,
@@ -62,12 +66,20 @@ export class Checks {
     const rows = new Map<string, Record<string, unknown>>();
     const cursors = new Set<string>();
     const fingerprints = new Set<string>();
+    const recordsById = new Map<string, string>(); const conflictingRecordIds = new Set<string>();
     let pageKey: string | undefined; let pages = 0; let complete = false; let stopReason = 'maxPages';
     let replayCurrentPage = false;
     let error: string | undefined;
     try {
     for (let page = 0; page < this.cfg.transferMaxPages; page++) {
       const result = await this.api.transferPage(direction, endBlock, pageKey); pages++;
+      // Scan variants before duplicate-page/cursor guards can stop this attempt.
+      for (const tx of result.transfers) {
+        const fingerprint = flowRecordFingerprint(normalizeTransfer(tx, direction));
+        const previous = recordsById.get(tx.uniqueId);
+        if (previous !== undefined && previous !== fingerprint) conflictingRecordIds.add(tx.uniqueId);
+        else if (previous === undefined) recordsById.set(tx.uniqueId, fingerprint);
+      }
       if (result.pageKey) {
         ensure(!cursors.has(result.pageKey), 'repeated pageKey'); cursors.add(result.pageKey);
       }
@@ -80,10 +92,7 @@ export class Checks {
         ensure(BigInt(tx.blockNum) >= BigInt(this.cfg.startBlock) && BigInt(tx.blockNum) <= BigInt(endBlock), 'transfer outside block range');
         const party = direction === 'incoming' ? tx.to : tx.from;
         ensure(party?.toLowerCase() === this.cfg.address.toLowerCase(), 'transfer outside direction filter');
-        rows.set(tx.uniqueId, { id: tx.uniqueId, hash: tx.hash, blockNumber: BigInt(tx.blockNum).toString(),
-          direction, from: tx.from, to: tx.to, category: tx.category, asset: tx.asset,
-          approximateValue: tx.value, rawValue: tx.rawContract.value, decimalsHex: tx.rawContract.decimal,
-          tokenAddress: tx.rawContract.address });
+        if (!rows.has(tx.uniqueId)) rows.set(tx.uniqueId, normalizeTransfer(tx, direction));
         consumed++;
       }
       if (consumed < result.transfers.length) { replayCurrentPage = true; stopReason = 'limit'; break; }
@@ -96,6 +105,7 @@ export class Checks {
       error = failure instanceof Error ? failure.message : 'Query failed'; stopReason = 'error';
     }
     return { count: rows.size, pages, complete, stopReason, nextPageKey: complete ? null : pageKey ?? null,
+      ...(conflictingRecordIds.size ? { conflictingRecordIds: [...conflictingRecordIds] } : {}),
       ...(error ? { error } : {}),
       replayCurrentPage, byCategory: {
         external: [...rows.values()].filter(t => t.category === 'external').length,

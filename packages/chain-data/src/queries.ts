@@ -7,6 +7,7 @@ import { Checks } from './checks.js';
 import { Transport, RequestScheduler, type RequestScope } from './http.js';
 import { Results, redact } from './output.js';
 import { resolveTimeWindow, validTimeWindow, validResolvedWindow, sameTimeWindow, type TimeWindow, type ResolvedTimeWindow } from './time.js';
+import { analyzeFlows, type FlowAnalysis } from './flows.js';
 
 export type QueryKind = 'get_eth_balance' | 'list_normal_transactions' | 'list_asset_transfers';
 export type QueryResult = {
@@ -59,7 +60,7 @@ export function errorCode(error: unknown): string {
 
 export class QueryService {
   private queries = new Map<string, QueryResult>();
-  private snapshot?: number;
+  private snapshot: number | undefined;
   private resolvedWindow?: ResolvedTimeWindow;
   private secrets: string[];
   constructor(private options: {
@@ -142,7 +143,9 @@ export class QueryService {
       result.status = result.completeness.complete ? 'ok' : errors.length && !count ? 'error' : 'partial';
       if (errors.length) result.error = { code: errorCode(errors[0]), message: errors.join('; ') };
       if (!result.completeness.complete) result.warnings.push('仅返回已获取的部分历史，不能视为完整记录。');
+      if (name === 'list_asset_transfers' && result.status !== 'error') result.data.flowAnalysis = analyzeFlows(result);
     } catch (error) {
+      result.status = 'error';
       result.error = { code: errorCode(error), message: error instanceof Error ? error.message : 'Query failed' };
     }
     result.fetchedAt = new Date().toISOString();
@@ -157,13 +160,16 @@ export class QueryService {
     return clean;
   }
   private directionSummary(value: Record<string, any>) {
-    const { transfers: _rows, nextPageKey: _cursor, ...summary } = value; return summary;
+    const { transfers: _rows, nextPageKey: _cursor, conflictingRecordIds, ...summary } = value;
+    return { ...summary, ...(conflictingRecordIds ? { conflictingRecordCount: conflictingRecordIds.length } : {}) };
   }
-  preview(query: QueryResult) {
+  preview(query: QueryResult, recordLimit = 3) {
     const data = { ...query.data };
-    if (data.transactions) data.transactions = data.transactions.slice(0, 3);
+    delete data.flowAnalysis;
+    if (query.kind === 'list_asset_transfers' && query.status !== 'error') data.flowAnalysisAvailable = true;
+    if (data.transactions) data.transactions = data.transactions.slice(0, recordLimit);
     for (const direction of ['incoming', 'outgoing']) if (data[direction]) {
-      data[direction] = { ...this.directionSummary(data[direction]), transfers: data[direction].transfers.slice(0, 3) };
+      data[direction] = { ...this.directionSummary(data[direction]), transfers: data[direction].transfers.slice(0, recordLimit) };
     }
     const { sessionId: _session, runId: _run, toolCallId: _call, ...rest } = query;
     const { timeWindow: w, requestedTimeWindow, ...range } = query.range;
@@ -179,12 +185,30 @@ export class QueryService {
     }
     return preview;
   }
+  analyzeFlows(queryId: string): FlowAnalysis {
+    const query = this.queries.get(queryId);
+    if (!query) throw new Error('INVALID_ARGUMENT: query evidence is not in this session');
+    return analyzeFlows(query);
+  }
   readEvidence(queryId: string, collection: string, offset: number, limit: number) {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) invalid();
     const q = this.queries.get(queryId);
     if (!q) throw new Error('INVALID_ARGUMENT: query evidence is not in this session');
-    const records = collection === 'transactions' ? q.data.transactions : collection === 'incoming' || collection === 'outgoing' ? q.data[collection]?.transfers : undefined;
+    const flow = collection === 'flow_assets' || collection === 'flow_counterparties' ? this.analyzeFlows(queryId) : undefined;
+    const records = flow ? collection === 'flow_assets' ? flow.assets : flow.counterparties :
+      collection === 'transactions' ? q.data.transactions : collection === 'incoming' || collection === 'outgoing' ? q.data[collection]?.transfers : undefined;
     if (!Array.isArray(records)) invalid();
+    if (flow) {
+      const page = records.slice(offset, offset + Math.min(limit, 5)).map((record: any) => {
+        if (collection === 'flow_counterparties') { const { recordIds: _ids, ...summary } = record; return summary; }
+        const { topIncoming: _in, topOutgoing: _out, ...summary } = record;
+        for (const d of ['incoming', 'outgoing', 'self']) { const { recordIds: _ids, ...amount } = record[d]; summary[d] = amount; }
+        return summary;
+      });
+      while (page.length > 1 && Buffer.byteLength(JSON.stringify(page), 'utf8') > 1600) page.pop();
+      return { queryId, collection, offset, records: page, totalAvailable: records.length,
+        hasMore: offset + page.length < records.length, upstreamComplete: q.completeness.complete };
+    }
     return { queryId, collection, offset, records: records.slice(offset, offset + limit), totalAvailable: records.length,
       hasMore: offset + limit < records.length, upstreamComplete: q.completeness.complete };
   }
