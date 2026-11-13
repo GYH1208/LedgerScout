@@ -8,3 +8,4 @@ export * from './queries.js';
 export * from './time.js';
 export * from './flows.js';
 export * from './ens.js';
+export * from './token.js';

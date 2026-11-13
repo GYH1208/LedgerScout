@@ -2,6 +2,7 @@ import type { Config } from './config.js';
 import { ApiError, Transport } from './http.js';
 import type { BlockTime } from './time.js';
 import { isEnsEthCall } from './ens-codec.js';
+import { isTokenEthCall } from './token.js';
 
 export const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -34,7 +35,7 @@ export class Api {
   async rpc(method: string, params: unknown[]): Promise<unknown> {
     if (!this.cfg.alchemyKey) throw new ApiError('Missing ALCHEMY_API_KEY; set it in local .env');
     ensure(['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'eth_getBlockByNumber', 'alchemy_getAssetTransfers'].includes(method) ||
-      method === 'eth_call' && isEnsEthCall(params), 'read-only method required');
+      method === 'eth_call' && (isEnsEthCall(params) || isTokenEthCall(params)), 'read-only method required');
     const id = ++this.id;
     return this.transport.request(method, new URL(`https://eth-mainnet.g.alchemy.com/v2/${encodeURIComponent(this.cfg.alchemyKey)}`), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
