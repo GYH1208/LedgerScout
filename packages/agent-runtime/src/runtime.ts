@@ -103,7 +103,7 @@ async function execute(options: Options, sessionId: string, recovery?: Awaited<R
   const budget = (message: string): never => { exhausted = true; runController.abort(new Error(message)); throw new Error(message); };
   const record = async (type: string, payload: Record<string, unknown> = {}) => {
     await journal.event(type, { sessionId, ...payload });
-    options.onEvent?.(redact({ type, ...payload }, secrets) as { type: string; [key: string]: unknown });
+    options.onEvent?.(redact({ ...payload, type, sessionId, runId }, secrets) as { type: string; [key: string]: unknown });
   };
   let recoveryActivated = false;
   const activateRecovery = async () => {

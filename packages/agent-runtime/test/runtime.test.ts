@@ -494,3 +494,14 @@ test('positive fresh intent still blocks old evidence after a negated refresh ph
  const next=await h.run(async()=>({content:JSON.stringify({kind:'answer',queryIds:[q.queryId],claims:[{queryId:q.queryId,field:'eth'}]})}),{sessionId:first.sessionId,input:`不要刷新 ${q.queryId}，但我要查询当前余额`});assert.notEqual(next.status,'completed');assert.equal(next.queries.length,0);
  }finally{await h.close();}
 });
+
+test('runtime exposes durable run identity before invoking model or chain providers', async()=>{
+ const h=await setup();let started:any;
+ try{
+  const r=await h.run(async()=>{
+   assert.match(started?.runId??'',/^r_/);assert.match(started?.sessionId??'',/^s_/);
+   return {content:JSON.stringify({kind:'unsupported',explanation:'No data needed'})};
+  },{onEvent:(e:any)=>{if(e.type==='run_started')started=e;}});
+  assert.equal(started.runId,r.runId);assert.equal(started.sessionId,r.sessionId);
+ }finally{await h.close();}
+});
