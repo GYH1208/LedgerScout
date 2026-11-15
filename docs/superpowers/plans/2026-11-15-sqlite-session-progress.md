@@ -33,3 +33,11 @@ Fresh review found three issues. Seven focused regressions were observed failing
 - Extended initial schema 1 to schema 2 for evidence SHA-256 fingerprints. Migration backfills old references from Runtime summaries before serving; this costs additional one-time local reads.
 
 Deferred minor review findings: none. Earlier history is retained but the current UI deliberately shows only 30 sessions / 20 turns; history search and pagination remain outside this scope. Physical mobile keyboards and assistive screen readers were not tested.
+
+## Local main integration
+
+- Integrated remote main `0cca1af` (fixed-block ERC20 balances) with the Web/SQLite work. Kept early run IDs, flow context compaction, negated refresh intent and bounded checkpoint dependency readers.
+- Extended Web projections and evidence validation to retain ERC20 contracts, exact raw/formatted string amounts and nullable decimals. Evidence panels identify token queries and show only raw units when precision is unavailable.
+- Regression tests cover ERC20 restart, legacy import, historical reuse without data HTTP and explicit checkpoint recovery. The merged suite exposed ordinary English negated-refresh/history words being mistaken for token identifiers; corrected the classifier and retained symbol-only target rejection.
+- Verification: root 301 tests, 299 passed, 2 optional tokenizer skips; root/data-validation typecheck passed; front-end build and 7 tests passed. Six actual local HTTP/SQLite/Pi browser checks passed with offline upstream responses and no browser errors, including ERC20 desktop evidence and unknown-decimals mobile rendering. Screenshots were inspected.
+- Independent merge review found the English history regression above; follow-up review verified the fix and reported no remaining important issues. Local integration only; no push or paid supplier queries were performed.

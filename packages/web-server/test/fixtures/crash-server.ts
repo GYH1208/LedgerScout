@@ -4,7 +4,7 @@ import { cfg, offlineRun } from '../support.js';
 const [dir,mode]=process.argv.slice(2);
 if(!dir)throw Error('Missing isolated output directory');
 let models=0;
-const server=createWebServer({config:()=>cfg(dir),run:async o=>offlineRun({onModel:async()=>{
+const server=createWebServer({config:()=>cfg(dir),run:async o=>offlineRun({token:mode?.startsWith('token'),metadataError:mode==='token-partial',onModel:async()=>{
   if(++models===2&&mode==='checkpoint'){console.log('PAUSED');await new Promise<void>(()=>{});}
 }})({...o,onEvent:e=>{
   o.onEvent?.(e);

@@ -48,6 +48,15 @@ function QueryInfo({ data, notify, loadMore }) {
           {q.address}
           <CopyAddress value={q.address} notify={notify} />
         </div>
+        {q.contractAddress && (
+          <>
+            <h3>代币合约</h3>
+            <div className="full-address">
+              {q.contractAddress}
+              <CopyAddress value={q.contractAddress} notify={notify} />
+            </div>
+          </>
+        )}
         {data.ensResolutions.map((e) => (
           <p key={e.resolutionId} className="muted">
             {e.name} → {e.address ?? e.status}
@@ -61,9 +70,9 @@ function QueryInfo({ data, notify, loadMore }) {
         <p>{range(q)}</p>
         <p className="muted">获取时间：{date(q.fetchedAt)} · Asia/Shanghai</p>
         <p>
-          {q.completeness.complete
-            ? "该查询声明范围已遍历完成"
-            : "部分数据，仅覆盖已取得记录"}
+          {q.kind === "get_erc20_balance"
+            ? q.status === "error" ? "未取得该区块余额" : q.completeness.complete ? "该区块余额查询完成" : "已取得原始余额，代币精度未知"
+            : q.completeness.complete ? "该查询声明范围已遍历完成" : "部分数据，仅覆盖已取得记录"}
         </p>
         <p className="muted">停止原因：{q.completeness.stopReason}</p>
         {q.error && (
@@ -77,6 +86,20 @@ function QueryInfo({ data, notify, loadMore }) {
           <h3>精确余额</h3>
           <p className="full-address">{q.balance.eth} ETH</p>
           <p className="muted full-address">{q.balance.wei} wei</p>
+        </section>
+      )}
+      {q.tokenBalance && (
+        <section>
+          <h3>精确代币余额</h3>
+          {q.tokenBalance.decimals === null ? (
+            <p>精度未知，无法换算代币数量。</p>
+          ) : (
+            <>
+              <p className="full-address">{q.tokenBalance.amount} 代币单位</p>
+              <p className="muted">精度：{q.tokenBalance.decimals}</p>
+            </>
+          )}
+          <p className="muted full-address">{q.tokenBalance.rawBalance} 原始单位</p>
         </section>
       )}
       <section>
@@ -183,7 +206,7 @@ function LiveAnswer({ turn, open, resume, busy }) {
         {r.ensResolutions?.find((e) => e.status === "resolved")?.name ??
           short(r.queries[0]?.address) ??
           "链上研究"}{" "}
-        · {r.queries[0]?.kind === "get_eth_balance" ? "ETH 余额" : "研究结果"}
+        · {r.queries[0]?.kind === "get_eth_balance" ? "ETH 余额" : r.queries[0]?.kind === "get_erc20_balance" ? "ERC20 余额" : "研究结果"}
       </h1>
       <div className="coverage">
         <span className="status-badge">{statuses[r.status]}</span>
@@ -218,6 +241,8 @@ function LiveAnswer({ turn, open, resume, busy }) {
                 [{i + 1}]{" "}
                 {q.kind === "get_eth_balance"
                   ? "ETH 余额"
+                  : q.kind === "get_erc20_balance"
+                  ? "ERC20 余额"
                   : q.kind === "list_asset_transfers"
                   ? "双向转账"
                   : "普通交易"}{" "}

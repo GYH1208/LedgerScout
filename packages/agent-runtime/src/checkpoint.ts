@@ -5,6 +5,7 @@ import { redact, validTimeWindow, validResolvedWindow, sameTimeWindow, normalize
 import { atomicJson, validId } from './session.js';
 import type { ChatMessage, ModelReply } from './types.js';
 import { loadEnsProofs, type EnsReference } from './ens.js';
+import { extractTokenTargets, validTokenContracts } from './token-targets.js';
 
 export type Checkpoint = {
   version: 1; sessionId: string; runId: string; input: string; addresses: string[]; lineage: string[];
@@ -15,6 +16,7 @@ export type Checkpoint = {
   cache: [string, string][]; failures: [string, number][]; repairUsed: boolean;
   elapsedMs: number; reservedMs: number; closed: boolean; resumedBy?: string;
   timeWindow?: TimeWindow;
+  tokenContracts?: string[];
   ensNames?: string[]; ensRefs?: EnsReference[]; ensReady?: boolean; ensLiteralAddresses?: string[];
 };
 const hash = (q: QueryResult) => createHash('sha256').update(JSON.stringify(q)).digest('hex');
@@ -47,6 +49,7 @@ export class CheckpointStore {
         invalid();
       }
       const hasEns = c.ensNames !== undefined;
+      if (c.tokenContracts !== undefined && !validTokenContracts(c.tokenContracts)) invalid();
       if (hasEns && (!Array.isArray(c.ensNames) || !c.ensNames.length || c.ensNames.length > 4 || new Set(c.ensNames).size !== c.ensNames.length ||
         c.ensNames.some(n => normalizeEnsName(n) !== n) || !Array.isArray(c.ensRefs) || typeof c.ensReady !== 'boolean')) invalid();
       if (c.ensLiteralAddresses !== undefined && (!hasEns || !Array.isArray(c.ensLiteralAddresses) || c.ensLiteralAddresses.some(a => !/^0x[0-9a-fA-F]{40}$/.test(a)))) invalid();
@@ -87,6 +90,8 @@ export class CheckpointStore {
       }
       if (c.cache.some(([, id]) => !queries.some(q => q.queryId === id && q.status !== 'error' && c.lineage.includes(q.runId)))) invalid();
       for (const q of queries) {
+        if (q.kind === 'get_erc20_balance' && c.lineage.includes(q.runId) &&
+          (!c.tokenContracts?.includes(q.contractAddress ?? '') || !c.addresses.some(a => a.toLowerCase() === q.address.toLowerCase()))) invalid();
         const w = q.range.timeWindow;
         if (!w) continue;
         const source = queries.find(source => source.queryId === w.sourceQueryId) ?? invalid();
@@ -100,7 +105,7 @@ export class CheckpointStore {
         if (c.ensRefs!.length > c.counts.tools || ensProofs.some(p => !c.ensNames!.includes(p.name) || p.status === 'resolved' && p.blockNumber !== c.snapshot)) invalid();
         const resolved = ensProofs.filter(p => p.status === 'resolved');
         if (c.ensReady && c.ensNames!.some(n => !resolved.some(p => p.name === n))) invalid();
-        const explicitInput = maskEnsNames(c.input).match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g) ?? [];
+        const explicitInput = maskEnsNames(extractTokenTargets(c.input).holderInput).match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g) ?? [];
         const explicit = c.ensLiteralAddresses ?? explicitInput;
         if (explicitInput.length && (new Set(explicitInput.map(a => a.toLowerCase())).size !== explicit.length || explicit.some(a => !explicitInput.some(x => x.toLowerCase() === a.toLowerCase())))) invalid();
         const authorized = new Set([...explicit, ...(c.ensReady ? resolved.map(p => p.address!) : [])].map(a => a.toLowerCase()));

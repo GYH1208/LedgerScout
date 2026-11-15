@@ -8,26 +8,29 @@ import { Transport, providerScheduler, type RequestScheduler, type RequestScope 
 import { Results, redact } from './output.js';
 import { resolveTimeWindow, validTimeWindow, validResolvedWindow, sameTimeWindow, type TimeWindow, type ResolvedTimeWindow } from './time.js';
 import { analyzeFlows, type FlowAnalysis } from './flows.js';
+import { readTokenBalance } from './token.js';
 
-export type QueryKind = 'get_eth_balance' | 'list_normal_transactions' | 'list_asset_transfers';
+export type QueryKind = 'get_eth_balance' | 'get_erc20_balance' | 'list_normal_transactions' | 'list_asset_transfers';
 export type QueryResult = {
   schemaVersion: 1; queryId: string; kind: QueryKind; sessionId: string; runId: string; toolCallId: string;
-  network: 'Ethereum Mainnet'; address: string; range: { startBlock?: number; endBlock?: number; blockNumber?: number; timeWindow?: ResolvedTimeWindow; requestedTimeWindow?: TimeWindow };
+  network: 'Ethereum Mainnet'; address: string; contractAddress?: string; range: { startBlock?: number; endBlock?: number; blockNumber?: number; timeWindow?: ResolvedTimeWindow; requestedTimeWindow?: TimeWindow };
   fetchedAt: string; status: 'ok' | 'partial' | 'error'; data: Record<string, any>;
   completeness: { complete: boolean; stopReason: string; incoming?: Record<string, unknown>; outgoing?: Record<string, unknown> };
   evidenceRefs: { id: string; provider: string; method: string }[]; warnings: string[];
   error?: { code: string; message: string };
 };
 export type QueryContext = RequestScope & { sessionId: string; runId: string; toolCallId: string };
-export const isQueryKind = (name: string): name is QueryKind => ['get_eth_balance', 'list_normal_transactions', 'list_asset_transfers'].includes(name);
+export const isQueryKind = (name: string): name is QueryKind => ['get_eth_balance', 'get_erc20_balance', 'list_normal_transactions', 'list_asset_transfers'].includes(name);
+export const isBalanceKind = (name: string) => name === 'get_eth_balance' || name === 'get_erc20_balance';
 const sharedScheduler = providerScheduler;
 const invalid = (): never => { throw new Error('INVALID_ARGUMENT: invalid or unsupported query arguments'); };
 
 export function validateQuery(name: string, args: Record<string, unknown>) {
   if (!isQueryKind(name)) invalid();
-  const allowed = name === 'get_eth_balance' ? ['address', 'blockNumber'] : ['address', 'startBlock', 'endBlock', 'pageSize', 'maxPages', 'maxRecords'];
+  const allowed = name === 'get_erc20_balance' ? ['address', 'contractAddress', 'blockNumber'] : name === 'get_eth_balance' ? ['address', 'blockNumber'] : ['address', 'startBlock', 'endBlock', 'pageSize', 'maxPages', 'maxRecords'];
   if (!args || Array.isArray(args) || Object.keys(args).some(k => !allowed.includes(k))) invalid();
   if (typeof args.address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(args.address)) invalid();
+  if (name === 'get_erc20_balance' && (typeof args.contractAddress !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(args.contractAddress))) invalid();
   const integer = (key: string, fallback: number | undefined, min: number, max: number) => {
     const value = args[key] ?? fallback;
     if (value === undefined) return undefined;
@@ -37,6 +40,7 @@ export function validateQuery(name: string, args: Record<string, unknown>) {
   const startBlock = integer('startBlock', 0, 0, Number.MAX_SAFE_INTEGER)!;
   const endBlock = integer('endBlock', undefined, startBlock, Number.MAX_SAFE_INTEGER);
   return { address: args.address as string, startBlock, endBlock,
+    ...(name === 'get_erc20_balance' ? { contractAddress: (args.contractAddress as string).toLowerCase() } : {}),
     blockNumber: integer('blockNumber', undefined, 0, Number.MAX_SAFE_INTEGER),
     pageSize: integer('pageSize', 25, 1, 100)!, maxPages: integer('maxPages', 2, 1, 4)!, maxRecords: integer('maxRecords', 50, 1, 200)! };
 }
@@ -102,10 +106,10 @@ export class QueryService {
     const api = new Api(cfg, transport);
     const result: QueryResult = { schemaVersion: 1, queryId, kind: name as QueryKind,
       sessionId: context.sessionId, runId: context.runId, toolCallId: context.toolCallId,
-      network: 'Ethereum Mainnet', address: input.address, range: {}, fetchedAt: new Date().toISOString(),
+      network: 'Ethereum Mainnet', address: input.address, ...(input.contractAddress ? { contractAddress: input.contractAddress } : {}), range: {}, fetchedAt: new Date().toISOString(),
       status: 'error', data: {}, completeness: { complete: false, stopReason: 'error' },
       evidenceRefs: [{ id: `${queryId}:data`, provider: name === 'list_normal_transactions' ? 'Etherscan V2' : 'Alchemy',
-        method: name === 'get_eth_balance' ? 'eth_getBalance' : name === 'list_normal_transactions' ? 'account/txlist' : 'alchemy_getAssetTransfers' }], warnings: [] };
+        method: name === 'get_erc20_balance' ? 'eth_call balanceOf(address) / decimals()' : name === 'get_eth_balance' ? 'eth_getBalance' : name === 'list_normal_transactions' ? 'account/txlist' : 'alchemy_getAssetTransfers' }], warnings: [] };
     try {
       // One validated snapshot per run. Explicit Etherscan windows can work without Alchemy.
       if (this.snapshot === undefined && !(name === 'list_normal_transactions' && input.endBlock !== undefined && !cfg.alchemyKey && !this.options.timeWindow)) {
@@ -114,7 +118,7 @@ export class QueryService {
         this.snapshot = snapshot;
       }
       let end = input.endBlock ?? this.snapshot!;
-      if (name !== 'get_eth_balance' && this.options.timeWindow) {
+      if (!isBalanceKind(name) && this.options.timeWindow) {
         result.range.requestedTimeWindow = this.options.timeWindow;
         const w = this.resolvedWindow ?? await resolveTimeWindow(api, this.options.timeWindow, this.snapshot!, queryId);
         result.range.timeWindow = w;
@@ -124,7 +128,7 @@ export class QueryService {
         if (w.clipped) result.warnings.push('日期末端超过查询时刻，已截到本轮查询时刻。');
       }
       const balanceBlock = input.blockNumber ?? this.snapshot!;
-      if (name === 'get_eth_balance') {
+      if (isBalanceKind(name)) {
         if (!Number.isSafeInteger(balanceBlock) || balanceBlock > this.snapshot!) invalid();
         result.range = { blockNumber: balanceBlock };
       } else {
@@ -132,17 +136,21 @@ export class QueryService {
         result.range = { ...result.range, startBlock: input.startBlock, endBlock: end };
       }
       const checks = new Checks({ ...cfg, endBlock: end }, api, { preservePartial: true, balanceBlock });
-      result.data = name === 'get_eth_balance' ? await checks.balance() : name === 'list_normal_transactions' ? await checks.transactions() : await checks.transfers();
-      if (name === 'get_eth_balance') result.completeness = { complete: true, stopReason: 'exhausted' };
+      result.data = name === 'get_erc20_balance' ? await readTokenBalance(api, input.address, input.contractAddress!, balanceBlock) : name === 'get_eth_balance' ? await checks.balance() : name === 'list_normal_transactions' ? await checks.transactions() : await checks.transfers();
+      if (name === 'get_erc20_balance') {
+        result.completeness = { complete: !result.data.error, stopReason: result.data.error ? 'metadata_unavailable' : 'exhausted' };
+        if (result.data.error) result.warnings.push('代币精度decimals未取得或无效，仅展示原始整数，不猜测精度。');
+      }
+      else if (name === 'get_eth_balance') result.completeness = { complete: true, stopReason: 'exhausted' };
       else if (name === 'list_normal_transactions') result.completeness = { complete: result.data.complete, stopReason: result.data.stopReason };
       else result.completeness = { complete: result.data.incoming.complete && result.data.outgoing.complete,
         stopReason: result.data.incoming.complete && result.data.outgoing.complete ? 'exhausted' : 'partial',
         incoming: this.directionSummary(result.data.incoming), outgoing: this.directionSummary(result.data.outgoing) };
       const errors = [result.data.error, result.data.incoming?.error, result.data.outgoing?.error].filter(Boolean);
-      const count = result.data.count ?? ((result.data.incoming?.count ?? 0) + (result.data.outgoing?.count ?? 0));
+      const count = result.data.rawBalance !== undefined ? 1 : result.data.count ?? ((result.data.incoming?.count ?? 0) + (result.data.outgoing?.count ?? 0));
       result.status = result.completeness.complete ? 'ok' : errors.length && !count ? 'error' : 'partial';
       if (errors.length) result.error = { code: errorCode(errors[0]), message: errors.join('; ') };
-      if (!result.completeness.complete) result.warnings.push('仅返回已获取的部分历史，不能视为完整记录。');
+      if (!result.completeness.complete && !isBalanceKind(name)) result.warnings.push('仅返回已获取的部分历史，不能视为完整记录。');
       if (name === 'list_asset_transfers' && result.status !== 'error') result.data.flowAnalysis = analyzeFlows(result);
     } catch (error) {
       result.status = 'error';
@@ -175,7 +183,7 @@ export class QueryService {
     const { timeWindow: w, requestedTimeWindow, ...range } = query.range;
     const modelRange = { ...range, ...(w ? { timeWindow: { startTimestamp: w.startTimestamp, endTimestamp: w.endTimestamp,
       timezone: w.timezone, clipped: w.clipped, sourceQueryId: w.sourceQueryId } } : requestedTimeWindow ? { requestedTimeWindow } : {}) };
-    if (query.kind !== 'get_eth_balance') data.previewNote = '记录仅为预览；count为实际已取得数量。明细用read_query_evidence读取。';
+    if (!isBalanceKind(query.kind)) data.previewNote = '记录仅为预览；count为实际已取得数量。明细用read_query_evidence读取。';
     const preview = { ...rest, range: modelRange, data };
     const lists: any[][] = [data.transactions, data.incoming?.transfers, data.outgoing?.transfers].filter(Array.isArray);
     while (Buffer.byteLength(JSON.stringify(preview), 'utf8') > 1800) {

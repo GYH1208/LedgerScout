@@ -7,9 +7,11 @@ export const validId = (value: unknown, prefix: string): value is string =>
 export function publicQuery(q: QueryResult) {
   return {
     queryId: q.queryId, kind: q.kind, address: q.address, network: q.network,
+    ...(q.kind === 'get_erc20_balance' ? { contractAddress: q.contractAddress } : {}),
     range: q.range, fetchedAt: q.fetchedAt, status: q.status, completeness: q.completeness,
     error: q.error, warnings: q.warnings, evidenceRefs: q.evidenceRefs,
     ...(q.kind === 'get_eth_balance' && q.status !== 'error' ? { balance: { wei: q.data.wei, eth: q.data.eth } } : {}),
+    ...(q.kind === 'get_erc20_balance' && q.status !== 'error' ? { tokenBalance: { rawBalance: q.data.rawBalance, decimals: q.data.decimals, amount: q.data.amount } } : {}),
     ...(q.kind === 'list_asset_transfers' ? { counts: { incoming: q.data.incoming?.count ?? 0, outgoing: q.data.outgoing?.count ?? 0 } } : {}),
     ...(q.kind === 'list_normal_transactions' ? { count: q.data.count ?? 0 } : {}),
   };

@@ -1,8 +1,8 @@
-import { formatWei, type QueryResult } from '@ledgerscout/chain-data';
+import { formatWei, formatTokenAmount, isBalanceKind, type QueryResult } from '@ledgerscout/chain-data';
 import { renderFlowSummary, renderCounterparties } from './flow-answer.js';
 type Claim = { queryId: string; field: string; recordId?: string };
 export type AnswerDraft = { kind: 'answer' | 'clarification' | 'unsupported'; queryIds?: string[]; claims?: Claim[]; message?: string; interpretation?: string };
-const fields = new Set(['eth', 'wei', 'count', 'incoming.count', 'outgoing.count', 'categories', 'transaction', 'flow_summary', 'counterparties']);
+const fields = new Set(['eth', 'wei', 'token_balance', 'count', 'incoming.count', 'outgoing.count', 'categories', 'transaction', 'flow_summary', 'counterparties']);
 export function parseAnswer(text: string, queries: QueryResult[]): AnswerDraft {
   const source = text.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
   const value = JSON.parse(source) as AnswerDraft;
@@ -24,6 +24,14 @@ export function parseAnswer(text: string, queries: QueryResult[]): AnswerDraft {
 }
 function claimText(claim: Claim, q: QueryResult): string {
   if (q.status === 'error') throw new Error('Failed query cannot supply facts');
+  if (claim.field === 'token_balance') {
+    const { rawBalance, decimals, amount } = q.data;
+    if (q.kind !== 'get_erc20_balance' || !/^0x[0-9a-f]{40}$/i.test(q.contractAddress ?? '') || typeof rawBalance !== 'string') throw new Error('Invalid ERC20 balance evidence');
+    formatTokenAmount(rawBalance, 0); // Verify canonical uint256 even when decimals is unavailable.
+    if (decimals === null && amount === null) return `ERC20 原始余额：${rawBalance} 原始单位\n精度未知，无法换算代币数量。`;
+    if (formatTokenAmount(rawBalance, decimals) !== amount) throw new Error('Invalid ERC20 formatted amount');
+    return `ERC20 余额：${amount} 代币单位\n原始余额：${rawBalance}；精度：${decimals}`;
+  }
   if (claim.field === 'flow_summary') return renderFlowSummary(q);
   if (claim.field === 'counterparties') return renderCounterparties(q);
   if (claim.field === 'eth' || claim.field === 'wei') {
@@ -53,10 +61,11 @@ function section(q: QueryResult, claims: Claim[]) {
   const w = q.range.timeWindow ?? q.range.requestedTimeWindow;
   const time = (n: number) => new Date((n + 8 * 3600) * 1000).toISOString().replace('T', ' ').replace('.000Z', '');
   const window = w ? `\n目标时间：${time(w.startTimestamp)} 至 ${time(w.endTimestamp)}（北京时间 Asia/Shanghai，含首尾秒）${w.clipped ? '；末端已截到查询时刻' : ''}` : '';
-  const header = `Ethereum Mainnet | 地址 ${q.address}\n${range} | 获取时间 ${q.fetchedAt}${window}\n证据：${q.queryId}`;
+  const header = `Ethereum Mainnet | 地址 ${q.address}${q.kind === 'get_erc20_balance' ? `\n代币合约：${q.contractAddress}` : ''}\n${range} | 获取时间 ${q.fetchedAt}${window}\n证据：${q.queryId}`;
   if (q.status === 'error') return `${header}\n查询失败：${q.error?.code ?? 'ERROR'} ${q.error?.message ?? ''}`;
   const facts = claims.map(c => claimText(c, q));
-  const completeness = q.completeness.complete ? '该查询声明范围已遍历完成。' : '仅获取部分历史，未覆盖完整查询范围。';
+  const completeness = isBalanceKind(q.kind) ? q.completeness.complete ? '该区块余额查询完成。' : '余额已取得，精度信息未完成；仅使用原始单位。' :
+    q.completeness.complete ? '该查询声明范围已遍历完成。' : '仅获取部分历史，未覆盖完整查询范围。';
   const directions = q.kind === 'list_asset_transfers' ? ['incoming', 'outgoing'].map(d => `${d === 'incoming' ? '流入' : '流出'}：${q.data[d].complete ? '范围完成' : '部分历史'}，停止原因 ${q.data[d].stopReason}`).join('；') : `停止原因：${q.completeness.stopReason}`;
   return `${header}\n${facts.join('\n')}\n${completeness}\n${directions}${q.error ? `\n异常：${q.error.code} ${q.error.message}` : ''}`;
 }
@@ -68,7 +77,7 @@ export function renderAnswer(draft: AnswerDraft, queries: QueryResult[]): string
 }
 export function fallbackAnswer(queries: QueryResult[], reason = '', includeFlows = false): string {
   const text = queries.map(q => {
-    const fields = q.kind === 'get_eth_balance' ? ['eth', 'wei'] : q.kind === 'list_normal_transactions' ? ['count'] :
+    const fields = q.kind === 'get_erc20_balance' ? ['token_balance'] : q.kind === 'get_eth_balance' ? ['eth', 'wei'] : q.kind === 'list_normal_transactions' ? ['count'] :
       includeFlows ? ['flow_summary', 'counterparties'] : ['incoming.count', 'outgoing.count', 'categories'];
     return section(q, q.status === 'error' ? [] : fields.map(field => ({ queryId: q.queryId, field })));
   }).join('\n\n');

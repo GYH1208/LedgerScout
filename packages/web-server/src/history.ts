@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { join, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CheckpointStore, defaultLimits, type RunResult } from '@ledgerscout/agent-runtime';
-import { redact, type QueryResult } from '@ledgerscout/chain-data';
+import { redact, isQueryKind, formatTokenAmount, type QueryResult } from '@ledgerscout/chain-data';
 import { WebStore } from './storage.js';
 import { validId, publicRun, type StoredJob } from './views.js';
 
@@ -29,8 +29,17 @@ async function readText(base: string, parts: string[], max: number) {
   } finally { await file.close(); }
 }
 function validQuery(q: any, sessionId: string): q is QueryResult {
-  if (!object(q) || q.schemaVersion !== 1 || q.sessionId !== sessionId || !validId(q.runId,'r') || !validId(q.queryId,'q') || !['get_eth_balance','list_asset_transfers','list_normal_transactions'].includes(q.kind) || !['ok','partial','error'].includes(q.status) || q.network !== 'Ethereum Mainnet' || !/^0x[0-9a-fA-F]{40}$/.test(q.address) || typeof q.fetchedAt !== 'string' || !Number.isFinite(Date.parse(q.fetchedAt)) || !object(q.data) || !object(q.range) || !object(q.completeness) || typeof q.completeness.complete !== 'boolean' || typeof q.completeness.stopReason !== 'string' || !Array.isArray(q.evidenceRefs) || !Array.isArray(q.warnings)) return false;
+  if (!object(q) || q.schemaVersion !== 1 || q.sessionId !== sessionId || !validId(q.runId,'r') || !validId(q.queryId,'q') || !isQueryKind(q.kind) || !['ok','partial','error'].includes(q.status) || q.network !== 'Ethereum Mainnet' || !/^0x[0-9a-fA-F]{40}$/.test(q.address) || typeof q.fetchedAt !== 'string' || !Number.isFinite(Date.parse(q.fetchedAt)) || !object(q.data) || !object(q.range) || !object(q.completeness) || typeof q.completeness.complete !== 'boolean' || typeof q.completeness.stopReason !== 'string' || !Array.isArray(q.evidenceRefs) || !Array.isArray(q.warnings)) return false;
+  if (q.kind === 'get_erc20_balance' && !/^0x[0-9a-fA-F]{40}$/.test(q.contractAddress ?? '')) return false;
   if (q.status === 'error') return true;
+  if (q.kind === 'get_erc20_balance') {
+    try {
+      const {rawBalance,decimals,amount}=q.data;
+      if (typeof rawBalance !== 'string') return false;
+      formatTokenAmount(rawBalance,0);
+      return decimals === null && amount === null || typeof decimals === 'number' && formatTokenAmount(rawBalance,decimals) === amount;
+    } catch { return false; }
+  }
   if (q.kind === 'get_eth_balance') return typeof q.data.wei === 'string' && /^\d+$/.test(q.data.wei) && typeof q.data.eth === 'string' && /^\d+(?:\.\d+)?$/.test(q.data.eth);
   if (q.kind === 'list_asset_transfers') return ['incoming','outgoing'].every(k=>object(q.data[k]) && integer(q.data[k].count) && Array.isArray(q.data[k].transfers) && q.data[k].transfers.every(object));
   return integer(q.data.count) && Array.isArray(q.data.transactions) && q.data.transactions.every(object);
