@@ -33,7 +33,7 @@ async function execute(question) {
   const accepted = await (await response).json();
   assert(accepted.jobId, accepted.error ?? "No accepted run");
   let turn;
-  const deadline = Date.now() + 150000;
+  const deadline = Date.now() + 330000;
   while (Date.now() < deadline) {
     const current = await state();
     turn = current.sessions
@@ -62,7 +62,7 @@ async function execute(question) {
     `Run status: ${run.status}; ${run.error ?? run.answer}`
   );
   assert(
-    run.counts.models <= 8 && run.counts.tools <= 12 && run.counts.http <= 32
+    run.counts.models <= 15 && run.counts.tools <= 12 && run.counts.http <= 32
   );
   const disk = JSON.parse(
     await readFile(

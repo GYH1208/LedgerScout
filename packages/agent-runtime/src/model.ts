@@ -54,7 +54,7 @@ export function createDeepSeekRequest(config: { key: string; model: string; maxO
   return async request => {
     request.signal?.throwIfAborted();
     if (request.maxOutputTokens !== undefined && (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 1)) throw new ModelError('Invalid model output limit');
-    const timeout = AbortSignal.timeout(30000);
+    const timeout = AbortSignal.timeout(35000);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
     let response: Response; let text: string;
     try {

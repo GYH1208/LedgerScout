@@ -17,8 +17,8 @@ import { isFlowAnalysisRequest, compactFlowContext } from './flow-context.js';
 import { extractEnsTargets, referenceEns, ensHeader } from './ens.js';
 import { extractTokenTargets } from './token-targets.js';
 
-export const defaultLimits = { maxModelRequests: 8, maxToolCalls: 12, maxHttpRequests: 32,
-  modelTimeoutMs: 30000, toolTimeoutMs: 45000, runTimeoutMs: 120000, maxContextBytes: 24000,
+export const defaultLimits = { maxModelRequests: 15, maxToolCalls: 12, maxHttpRequests: 32,
+  modelTimeoutMs: 35000, toolTimeoutMs: 45000, runTimeoutMs: 300000, maxContextBytes: 24000,
   maxContextTokens: 12000, reservedOutputTokens: 2000, retryDelayMs: 1000 };
 type Limits = typeof defaultLimits;
 export type RunResult = { sessionId: string; runId: string; directory: string; status: RunStatus; answer: string;

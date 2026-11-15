@@ -134,7 +134,7 @@ config:parseConfig({ALCHEMY_API_KEY:'offline-key',REQUEST_INTERVAL_MS:'0'}),requ
     const fs = await import('node:fs/promises');
     const rid = (await fs.readdir(join(h.dir, 's_crash'))).find(x => x.startsWith('r_'))!;
     const saved = JSON.parse(await readFile(join(h.dir, 's_crash', rid, 'checkpoint.json'), 'utf8'));
-    assert.equal(saved.counts.models, 1); assert.equal(saved.reservedMs, 30000);
+    assert.equal(saved.counts.models, 1); assert.equal(saved.reservedMs, 35000);
     let turn = 0;
     const result = await h.run({ input: '', sessionId: 's_crash', resumeRunId: rid,
       request: async (r: ModelRequest) => ++turn === 1 ? { content: '', toolCalls: [call('a')] } : answer(r) });
