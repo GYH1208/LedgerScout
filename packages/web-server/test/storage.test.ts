@@ -62,6 +62,12 @@ test('foreign results cannot replace a durable task or register their evidence',
   finally { store.close(); await loc.clean(); }
 });
 
+test('imported history follows its recorded time rather than filesystem enumeration order', async()=>{
+ const loc=await location(),store=new WebStore(loc.path);
+ try{store.importResult(outcome('s_newer','r_newer'),'newer','2026-11-16');store.importResult(outcome('s_older','r_older'),'older','2026-11-15');assert.equal(store.list().sessions[0]!.id,'s_newer');}
+ finally{store.close();await loc.clean();}
+});
+
 test('unknown schema and corrupt databases fail without silently replacing the original file', async () => {
   const loc = await location();
   try {

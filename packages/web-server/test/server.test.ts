@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createWebServer } from "../src/server.js";
 import { parseConfig } from "@ledgerscout/chain-data";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { offlineRun, question as balanceQuestion } from './support.js';
 const address = "0x" + "1".repeat(40),
   queryId = "q_test";
 const config = () => ({
@@ -11,6 +15,8 @@ const config = () => ({
   chain: parseConfig({
     ALCHEMY_API_KEY: "chain-secret",
     ETHERSCAN_API_KEY: "scan-secret",
+    REQUEST_INTERVAL_MS: "0",
+    MAX_RETRIES: "0",
   }),
   outputDirectory: "/local/private/results",
 });
@@ -53,18 +59,37 @@ const result = (o: any) => ({
   },
 });
 async function setup(options: any = {}) {
-  const server = createWebServer({ config, ...options });
+  const directory = await mkdtemp(join(tmpdir(),'ledger-http-'));
+  const load = () => { const c = (options.config ?? config)(); return {...c,outputDirectory:c.outputDirectory==='/local/private/results'?directory:c.outputDirectory}; };
+  // Injected adapter fixtures retain the file side effects of the real runner.
+  // Actual Runtime tests below write their own authoritative files.
+  const run = options.run ? async(o:any) => {
+    const r=await options.run(o);
+    const path=join(o.outputDirectory,r.sessionId,r.runId,'run-summary.json');
+    try {await readFile(path);} catch(error) {
+      if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+      await mkdir(join(o.outputDirectory,r.sessionId,r.runId),{recursive:true});
+      await writeFile(path,JSON.stringify(r));
+      for(const q of r.queries) {const dir=join(o.outputDirectory,q.sessionId,q.runId,'queries',q.queryId);await mkdir(dir,{recursive:true});await writeFile(join(dir,'query.json'),JSON.stringify(q));}
+    }
+    return r;
+  } : undefined;
+  const server = createWebServer({ config: load, ...(run?{run}:{}) });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  await server.ready;
   const port = (server.address() as any).port;
   return {
     server,
     base: `http://127.0.0.1:${port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
+    close: async () => {
+      await new Promise<void>((resolve, reject) => {
         server.closeAllConnections();
         server.close((e) => (e ? reject(e) : resolve()));
-      }),
+      });
+      await server.shutdown;
+      await rm(directory,{recursive:true,force:true});
+    },
   };
 }
 const headers = {
@@ -197,29 +222,25 @@ test("real result keeps exact values and only registered evidence is readable", 
 });
 test("busy runs serialize; cancel uses signal; explicit resume delegates only registered resumable run", async () => {
   const seen: any[] = [];
+  let modelCalls=0;
   const h = await setup({
     run: async (o: any) => {
       seen.push(o);
-      if (!o.resumeRunId)
-        await new Promise<void>((resolve) =>
-          o.signal.addEventListener("abort", () => resolve(), { once: true })
-        );
-      const r = result(o);
-      if (!o.resumeRunId) {
-        r.status = "cancelled" as any;
-        r.resumable = true;
-      }
-      return r;
+      return offlineRun({onModel:async()=>{
+        if(!o.resumeRunId&&++modelCalls===2)await new Promise<void>(resolve=>o.signal.addEventListener('abort',()=>resolve(),{once:true}));
+      }})(o);
     },
   });
   try {
     const start = (await (
-      await post(h.base, "/api/runs", { question: "cancel test" })
+      await post(h.base, "/api/runs", { question: balanceQuestion })
     ).json()) as any;
     assert.equal(
       (await post(h.base, "/api/runs", { question: "duplicate" })).status,
       409
     );
+    for(let i=0;i<100&&modelCalls<2;i++)await new Promise(r=>setTimeout(r,5));
+    assert.equal(modelCalls,2);
     assert.equal(
       (await post(h.base, `/api/runs/${start.jobId}/cancel`)).status,
       200

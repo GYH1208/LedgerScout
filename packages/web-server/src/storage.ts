@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import type { RunResult } from '@ledgerscout/agent-runtime';
 import { publicRun, validId, type StoredJob } from './views.js';
 
@@ -20,7 +20,7 @@ export class WebStore {
     try {
       this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=2500');
       const version = this.db.prepare('PRAGMA user_version').get()!.user_version;
-      if (version !== 0 && version !== 1) throw Error('Unsupported Web database schema');
+      if (version !== 0 && version !== 1 && version !== 2) throw Error('Unsupported Web database schema');
       if (version === 0) {
         if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").get()) throw Error('Unknown Web database schema');
         this.transaction(() => this.db.exec(`
@@ -41,6 +41,9 @@ export class WebStore {
           PRAGMA user_version=1;
         `));
       }
+      if (this.db.prepare('PRAGMA user_version').get()!.user_version === 1) this.transaction(() => {
+        this.db.exec("ALTER TABLE evidence_refs ADD COLUMN hash TEXT NOT NULL DEFAULT ''; PRAGMA user_version=2");
+      });
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL');
       this.transaction(() => {
         const owner = this.db.prepare("SELECT value FROM meta WHERE key='owner'").get();
@@ -95,34 +98,35 @@ export class WebStore {
     this.transaction(() => {
       this.db.prepare('UPDATE jobs SET status=?,run_id=?,error=NULL,result_json=?,updated_at=? WHERE id=?').run(result.status, result.runId, json, new Date().toISOString(), id);
       this.db.prepare('DELETE FROM evidence_refs WHERE job_id=?').run(id);
-      const insert = this.db.prepare('INSERT INTO evidence_refs VALUES(?,?,?)');
-      for (const q of result.queries) insert.run(id, q.queryId, q.runId);
+      const insert = this.db.prepare('INSERT INTO evidence_refs VALUES(?,?,?,?)');
+      for (const q of result.queries) insert.run(id, q.queryId, q.runId, createHash('sha256').update(JSON.stringify(q)).digest('hex'));
     });
   }
   interrupt(id: string, error: string) { this.db.prepare("UPDATE jobs SET status='interrupted',error=?,updated_at=? WHERE id=?").run(error, new Date().toISOString(), id); }
   fail(id: string, error: string) { this.db.prepare("UPDATE jobs SET status='failed',error=?,updated_at=? WHERE id=?").run(error, new Date().toISOString(), id); }
-  refs(id: string) { return this.db.prepare('SELECT query_id AS queryId,source_run_id AS sourceRunId FROM evidence_refs WHERE job_id=?').all(id) as { queryId: string; sourceRunId: string }[]; }
+  refs(id: string) { return this.db.prepare('SELECT query_id AS queryId,source_run_id AS sourceRunId,hash FROM evidence_refs WHERE job_id=?').all(id) as { queryId: string; sourceRunId: string; hash: string }[]; }
   unfinished() { return this.db.prepare("SELECT * FROM jobs WHERE status='loading' ORDER BY seq").all().map(row => this.row(row)); }
+  unhashed() { return this.db.prepare("SELECT DISTINCT j.* FROM jobs j JOIN evidence_refs e ON e.job_id=j.id WHERE e.hash='' ORDER BY j.seq").all().map(row => this.row(row)); }
   list() {
-    const rows = this.db.prepare('SELECT s.*,MAX(j.seq) AS latest FROM sessions s JOIN jobs j ON j.session_id=s.id GROUP BY s.id ORDER BY latest DESC LIMIT 31').all();
+    const rows = this.db.prepare('SELECT s.*,MAX(j.created_at) AS latest,MAX(j.seq) AS tie FROM sessions s JOIN jobs j ON j.session_id=s.id GROUP BY s.id ORDER BY latest DESC,tie DESC LIMIT 31').all();
     return { hasMoreSessions: rows.length > 30, sessions: rows.slice(0,30).map(row => {
-      const jobs = this.db.prepare('SELECT * FROM jobs WHERE session_id=? ORDER BY seq DESC LIMIT 21').all(String(row.id));
+      const jobs = this.db.prepare('SELECT * FROM jobs WHERE session_id=? ORDER BY created_at DESC,seq DESC LIMIT 21').all(String(row.id));
       return { id: String(row.id), title: String(row.title), date: String(row.date), hasMoreTurns: jobs.length > 20, turns: jobs.slice(0,20).reverse().map(row => this.row(row)) };
     }) };
   }
   hasImported() { return Boolean(this.db.prepare("SELECT value FROM meta WHERE key='imported'").get()); }
   completeImport(skipped: number) { this.db.prepare("INSERT OR REPLACE INTO meta VALUES('imported',?)").run(String(skipped)); }
   importWarnings() { return Number(this.db.prepare("SELECT value FROM meta WHERE key='imported'").get()?.value ?? 0); }
-  importResult(result: RunResult, question: string, date: string) {
+  importResult(result: RunResult, question: string, date: string, createdAt = `${date}T00:00:00.000Z`) {
     if (this.findRun(result.sessionId, result.runId)) return;
     this.transaction(() => {
       this.db.prepare('INSERT OR IGNORE INTO sessions VALUES(?,?,?)').run(result.sessionId, question.slice(0,100), date);
-      const id = `j_history_${result.runId.slice(2)}`, now = `${date}T00:00:00Z`;
+      const id = `j_history_${result.runId.slice(2)}`, now = createdAt;
       this.db.prepare("INSERT INTO jobs(id,session_id,question,status,created_at,updated_at) VALUES(?,?,?,'interrupted',?,?)").run(id, result.sessionId, question, now, now);
       // Finish uses its own transaction, so insert projected fields here as one import transaction.
       const json = JSON.stringify(publicRun(result)); if (Buffer.byteLength(json) > 2_000_000) throw Error('Web result too large');
       this.db.prepare('UPDATE jobs SET status=?,run_id=?,result_json=? WHERE id=?').run(result.status, result.runId, json, id);
-      for (const q of result.queries) this.db.prepare('INSERT INTO evidence_refs VALUES(?,?,?)').run(id,q.queryId,q.runId);
+      for (const q of result.queries) this.db.prepare('INSERT INTO evidence_refs VALUES(?,?,?,?)').run(id,q.queryId,q.runId,createHash('sha256').update(JSON.stringify(q)).digest('hex'));
     });
   }
   close() {
