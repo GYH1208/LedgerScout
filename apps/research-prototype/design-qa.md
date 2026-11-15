@@ -64,4 +64,12 @@ Further real-data checks (`evidence-checks.json` in the same run folder) passed:
 
 Both independent-review issues (delayed evidence reopening and consumed recovery still offered) have failing-before/passing-after regressions. No actionable visual P0/P1/P2 remains in inspected states. Actual physical-device keyboards and assistive readers remain untested.
 
+## SQLite persistence addition — 2026-11-15
+
+The live view now persists local conversation/answer/job metadata in SQLite while retaining Runtime evidence and checkpoints as files. The layout is unchanged. Sidebar copy now accurately states that history survives restarts. A Web-only interrupted turn can display an explicit recovery control without inventing a Runtime answer; validation determines availability.
+
+`npm run test:persistence` passed against actual local HTTP + SQLite + Pi Runtime in isolated subprocesses, with only upstream supplier responses replaced offline. It verifies restart/retained answer and exact wei evidence, historical follow-up with zero data HTTP, SIGKILL/interruption/explicit recovery, and the mobile restored-evidence drawer without page overflow. Browser errors: none. Evidence: `../../docs/design/qa/sqlite-persistence-results.json`, `sqlite-offline-interrupted-desktop.png` (1440 × 1024) and `sqlite-offline-evidence-mobile.png` (390 × 844). Both screenshots were inspected.
+
+Original demo's 16 browser checks and live offline transport checks passed after the UI additions. Root suite on Node 24 and the exact minimum Node 22.19.0: 269 passed, 2 optional tokenizer skips; typecheck and front-end build/7 tests passed. This persistence milestone made no additional real model or chain-data requests.
+
 final result: passed

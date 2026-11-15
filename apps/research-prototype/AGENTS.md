@@ -6,6 +6,8 @@ User selected generated option 2 and approved its interaction scope on 2026-11-1
 
 On 2026-11-15 the user requested real testing. Live mode is separately available at `?mode=live`, using the existing Runtime via a loopback-only local adapter; see `../../docs/superpowers/specs/2026-11-15-web-live-design.md`. The default demo remains separate. Live mode must never use sample facts or fall back to them. Explicit `test:live` calls providers and incurs usage; ordinary tests remain offline.
 
+The user subsequently selected SQLite for local single-user persistence and approved direct implementation. Web metadata lives in the ignored `runtime-results/web.sqlite`; raw evidence and checkpoints remain Runtime files. Startup/history viewing never calls suppliers; interrupted runs require explicit recovery. See `../../docs/superpowers/specs/2026-11-15-sqlite-session-design.md`. `test:persistence` uses actual local HTTP/SQLite/Pi Runtime with offline upstream responses in a temporary directory.
+
 Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
 
 Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.

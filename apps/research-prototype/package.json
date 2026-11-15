@@ -12,6 +12,7 @@
     "test:ui": "node scripts/verify-ui.mjs",
     "test:live-offline": "node scripts/verify-live-offline.mjs",
     "test:live": "node scripts/verify-live.mjs",
+    "test:persistence": "node scripts/verify-persistence.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

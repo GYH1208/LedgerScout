@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "transport": "forwarded to actual local HTTP/SQLite/Pi Runtime; offline upstream responses only",
+  "sessionId": "s_2d2fa2c1-ef87-4386-96f3-738091dd3fb2",
+  "checks": [
+    "subprocess restart retains conversation and exact evidence",
+    "historical follow-up uses original evidence with zero data HTTP",
+    "SIGKILL becomes interrupted and explicit recovery reuses completed data",
+    "mobile restored evidence drawer preserves precision without overflow"
+  ],
+  "errors": []
+}

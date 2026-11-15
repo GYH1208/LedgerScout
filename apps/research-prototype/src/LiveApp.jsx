@@ -19,6 +19,7 @@ const statuses = {
   failed: "查询失败",
   cancelled: "已取消",
   exhausted: "预算耗尽",
+  interrupted: "查询已中断",
 };
 const short = (v) => (v?.length > 18 ? `${v.slice(0, 8)}…${v.slice(-6)}` : v);
 const date = (value) =>
@@ -164,6 +165,15 @@ function LiveAnswer({ turn, open, resume, busy }) {
       <div className="state-message" role="status">
         <h2>{statuses[turn.status] ?? "连接异常"}</h2>
         <p>{turn.error ?? "未取得运行结果。"}</p>
+        {turn.recovery && (
+          <button className="text-action" disabled={busy} onClick={() => resume(turn.recovery)}>
+            <ArrowCounterClockwise size={16} />
+            恢复本轮查询
+          </button>
+        )}
+        {turn.status === "interrupted" && !turn.recovery && (
+          <p>没有通过校验的恢复检查点。你可以重新提交问题；系统不会自动重试。</p>
+        )}
       </div>
     );
   const ids = new Map(r.queries.map((q) => [q.queryId, q]));
@@ -349,7 +359,7 @@ export function LiveApp() {
     requestAnimationFrame(() => inputRef.current?.focus());
   }
   async function submit() {
-    if (!question.trim() || sending || state.busy || !state.ready) return;
+    if (!question.trim() || sending || state.busy || !state.ready || error) return;
     setSending(true);
     try {
       const next = await startRun({
@@ -457,15 +467,16 @@ export function LiveApp() {
           </button>
         ))}
         {!state.sessions.length && <p className="muted">还没有真实查询</p>}
+        {state.hasMoreSessions && <p className="muted">当前展示最近 30 个会话，更早历史仍保存在本机。</p>}
       </nav>
       <div className="sidebar-bottom">
         <p className="live-mode-label">
           真实数据 · {state.model ?? "DeepSeek"}
         </p>
         <p>
-          证据保存于本机
+          <span>会话与证据保存在本机</span>
           <br />
-          Web 会话在服务重启后重置
+          重启后可继续研究
         </p>
         <a className="text-action" href="?mode=demo">
           查看演示界面
@@ -511,6 +522,8 @@ export function LiveApp() {
             其他会话正在查询，可切换回该会话查看进度或取消。
           </div>
         )}
+        {session?.hasMoreTurns && <div className="live-banner" role="status">当前展示此会话最近 20 轮对话，更早历史仍保存在本机。</div>}
+        {state.importWarnings > 0 && <div className="live-banner" role="status">部分旧记录无法读取，原文件已保留；当前展示可读取的历史记录。</div>}
         {home ? (
           <div className="home-content">
             <div className="welcome">
