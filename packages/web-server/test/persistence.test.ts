@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, rename, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, rename, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,6 +8,8 @@ import { WebStore } from '../src/storage.js';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { runAgent } from '@ledgerscout/agent-runtime';
+import { recovery } from '../src/history.js';
 import { cfg, done, offlineRun, post, question, start, state } from './support.js';
 
 async function temp() {return mkdtemp(join(tmpdir(),'ledger-web-persist-'));}
@@ -102,4 +104,55 @@ for(const mode of ['checkpoint','no-checkpoint'])test(`SIGKILL restart with ${mo
   assert.equal(Boolean(t.recovery),mode==='checkpoint');
   if(t.recovery){assert.equal((await post(h.base,'/api/runs',{sessionId:t.recovery.sessionId,resumeRunId:t.recovery.runId})).status,202);const last=(await done(h.base)).sessions[0].turns.at(-1).run;assert.equal(last.status,'completed');assert.equal(last.counts.http,3);assert.equal(fetched,0);}
  }finally{clearTimeout(timer);child.kill('SIGKILL');await h?.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('a completed Runtime result is reconciled after final SQL persistence failed',async()=>{
+ const dir=await temp();let h=await start(dir);
+ try{
+  const db=new DatabaseSync(join(dir,'web.sqlite'));db.exec("CREATE TRIGGER reject_final BEFORE UPDATE OF result_json ON jobs BEGIN SELECT RAISE(ABORT,'write failure'); END");
+  const accepted=await(await post(h.base,'/api/runs',{question})).json() as any;const failed=await done(h.base);assert.equal(failed.sessions[0].turns[0].status,'failed');assert.equal(failed.sessions[0].turns[0].run,undefined);
+  db.exec('DROP TRIGGER reject_final');db.close();await h.close();h=await start(dir);
+  const restored=(await state(h.base)).body.sessions[0].turns[0];assert.equal(restored.run?.status,'completed');assert.match(restored.run.answer,/1\.000000000000000001/);
+  assert.equal((await fetch(h.base+`/api/evidence/${accepted.jobId}/${restored.run.queries[0].queryId}`)).status,200);
+ }finally{await h.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('a failed bound job without a result still exposes its valid checkpoint',async()=>{
+ const dir=await temp(),h=await start(dir,offlineRun({cancelAfterQuery:true}));
+ try{
+  await post(h.base,'/api/runs',{question});const t=(await done(h.base)).sessions[0].turns[0];assert.equal(t.run.resumable,true);
+  await unlink(join(dir,t.run.sessionId,t.run.runId,'run-summary.json'));
+  const db=new DatabaseSync(join(dir,'web.sqlite'));db.prepare("UPDATE jobs SET status='failed',result_json=NULL WHERE id=?").run(t.id);db.close();
+  const current=(await state(h.base)).body.sessions[0].turns[0];assert.equal(current.recovery?.runId,t.run.runId);
+ }finally{await h.close();await rm(dir,{recursive:true,force:true});}
+});
+
+for(const malformed of ['duplicate queries','oversized projection'])test(`import skips ${malformed} without disabling other local history`,async()=>{
+ const dir=await temp();let h:Awaited<ReturnType<typeof start>>|undefined;
+ try{
+  const r=await offlineRun()({input:question,sessionId:'s_legacy',config:cfg(dir).chain,outputDirectory:dir,request:async()=>({content:''})});
+  if(malformed==='duplicate queries')r.queries.push(r.queries[0]!);else r.answer='x'.repeat(2_000_001);
+  await writeFile(join(dir,r.sessionId,r.runId,'run-summary.json'),JSON.stringify(r));h=await start(dir);const s=await state(h.base);assert.equal(s.status,200);assert.equal(s.body.sessions.length,0);assert.equal(s.body.importWarnings,1);
+ }finally{await h?.close();await rm(dir,{recursive:true,force:true});}
+});
+
+for(const dependency of ['ENS proof','terminal summary','parent checkpoint'])test(`recovery rejects a symlinked ${dependency} outside its output root`,async()=>{
+ const dir=await temp(),external=await temp();let r;let path:string;
+ try{
+  if(dependency==='ENS proof'){
+   const ctl=new AbortController(),word=(n:number)=>n.toString(16).padStart(64,'0');
+   r=await runAgent({input:'查询 vitalik.eth 当前 ETH 余额',config:cfg(dir).chain,outputDirectory:dir,signal:ctl.signal,request:async()=>({content:''}),onEvent:e=>{if(e.type==='ens_resolved')ctl.abort();},fetch:async(_u,init)=>{
+    const b=JSON.parse(String(init?.body));return Response.json({jsonrpc:'2.0',id:b.id,result:b.method==='eth_chainId'?'0x1':b.method==='eth_blockNumber'?'0xa':'0x'+word(64)+'3'.repeat(40).padStart(64,'0')+word(32)+'1'.repeat(40).padStart(64,'0')});
+   }});
+   path=join(dir,r.sessionId,r.runId,'resolutions',r.ensResolutions![0]!.resolutionId,'resolution.json');
+  }else{
+   r=await offlineRun({cancelAfterQuery:true})({input:question,sessionId:'s_guard',config:cfg(dir).chain,outputDirectory:dir,request:async()=>({content:''})});
+   path=join(dir,r.sessionId,r.runId,dependency==='terminal summary'?'run-summary.json':'checkpoint.json');
+   if(dependency==='parent checkpoint'){
+    const ctl=new AbortController();r=await runAgent({input:'',sessionId:r.sessionId,resumeRunId:r.runId,config:cfg(dir).chain,outputDirectory:dir,signal:ctl.signal,request:async()=>{ctl.abort();return new Promise(()=>{});}});
+   }
+  }
+  assert.equal(r.status,'cancelled');const job={id:'j_guard',sessionId:r.sessionId,runId:r.runId,question,status:'cancelled',progress:[]};assert(await recovery(dir,job));
+  const outside=join(external,'proof.json');await rename(path,outside);await symlink(outside,path);assert.equal(await recovery(dir,job),undefined);
+ }finally{await rm(dir,{recursive:true,force:true});await rm(external,{recursive:true,force:true});}
 });

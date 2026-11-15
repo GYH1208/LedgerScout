@@ -22,14 +22,18 @@ export function extractEnsTargets(input: string): { names: { name: string; origi
     return { names };
   } catch { return { names: [], error: 'ENS名称无效或不明确；请提供完整 .eth 名称，与中文指令间留空格，每轮最多4个名称。' }; }
 }
-export async function loadEnsProofs(base: string, sessionId: string, lineage: string[], refs: EnsReference[]): Promise<EnsResolution[]> {
+export async function loadEnsProofs(base: string, sessionId: string, lineage: string[], refs: EnsReference[], readJson?: (path:string,max:number)=>Promise<unknown>): Promise<EnsResolution[]> {
   if (!Array.isArray(refs) || refs.length > 12) throw new Error('Invalid ENS evidence references');
   const proofs: EnsResolution[] = [];
   for (const ref of refs) {
     if (!ref || !validId(ref.runId) || !lineage.includes(ref.runId) || !validId(ref.resolutionId) || !/^e_/.test(ref.resolutionId) || !/^[a-f0-9]{64}$/.test(ref.hash)) throw new Error('Invalid ENS evidence reference');
     const path = join(base, sessionId, ref.runId, 'resolutions', ref.resolutionId, 'resolution.json');
-    if ((await stat(path)).size > 16000) throw new Error('Invalid ENS evidence size');
-    const p = JSON.parse(await readFile(path, 'utf8')) as EnsResolution;
+    let p: EnsResolution;
+    if (readJson) p = await readJson(path, 16000) as EnsResolution;
+    else {
+      if ((await stat(path)).size > 16000) throw new Error('Invalid ENS evidence size');
+      p = JSON.parse(await readFile(path, 'utf8')) as EnsResolution;
+    }
     if (hashEns(p) !== ref.hash || p.version !== 1 || p.sessionId !== sessionId || p.runId !== ref.runId || p.resolutionId !== ref.resolutionId ||
       p.network !== 'Ethereum Mainnet' || p.universalResolver !== UNIVERSAL_RESOLVER || normalizeEnsName(p.name) !== p.name ||
       normalizeEnsName(p.originalName) !== p.name || !['resolved', 'not_found', 'unsupported', 'error'].includes(p.status) || !Number.isFinite(Date.parse(p.resolvedAt))) throw new Error('Invalid ENS query evidence');

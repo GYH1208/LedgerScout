@@ -105,7 +105,7 @@ export class WebStore {
   interrupt(id: string, error: string) { this.db.prepare("UPDATE jobs SET status='interrupted',error=?,updated_at=? WHERE id=?").run(error, new Date().toISOString(), id); }
   fail(id: string, error: string) { this.db.prepare("UPDATE jobs SET status='failed',error=?,updated_at=? WHERE id=?").run(error, new Date().toISOString(), id); }
   refs(id: string) { return this.db.prepare('SELECT query_id AS queryId,source_run_id AS sourceRunId,hash FROM evidence_refs WHERE job_id=?').all(id) as { queryId: string; sourceRunId: string; hash: string }[]; }
-  unfinished() { return this.db.prepare("SELECT * FROM jobs WHERE status='loading' ORDER BY seq").all().map(row => this.row(row)); }
+  unfinished() { return this.db.prepare("SELECT * FROM jobs WHERE status='loading' OR (run_id IS NOT NULL AND result_json IS NULL) ORDER BY seq").all().map(row => this.row(row)); }
   unhashed() { return this.db.prepare("SELECT DISTINCT j.* FROM jobs j JOIN evidence_refs e ON e.job_id=j.id WHERE e.hash='' ORDER BY j.seq").all().map(row => this.row(row)); }
   list() {
     const rows = this.db.prepare('SELECT s.*,MAX(j.created_at) AS latest,MAX(j.seq) AS tie FROM sessions s JOIN jobs j ON j.session_id=s.id GROUP BY s.id ORDER BY latest DESC,tie DESC LIMIT 31').all();

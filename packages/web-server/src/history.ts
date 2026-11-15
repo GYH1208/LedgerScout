@@ -1,11 +1,11 @@
 import { open, lstat, opendir, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CheckpointStore, defaultLimits, type RunResult } from '@ledgerscout/agent-runtime';
 import { redact, type QueryResult } from '@ledgerscout/chain-data';
 import { WebStore } from './storage.js';
-import { validId, type StoredJob } from './views.js';
+import { validId, publicRun, type StoredJob } from './views.js';
 
 const unavailable = () => Error('Local evidence unavailable');
 const integer = (v: unknown) => Number.isSafeInteger(v) && Number(v) >= 0;
@@ -40,12 +40,15 @@ function validResult(r: any, sessionId: string, runId: string): r is RunResult {
     ['completed','partial','awaiting_user','failed','cancelled','exhausted'].includes(r.status) && typeof r.answer === 'string' && Array.isArray(r.warnings) &&
     object(r.counts) && ['models','tools','http'].every(k=>integer(r.counts[k])) && object(r.tokenUsage) && r.tokenUsage.source === 'provider' &&
     ['inputTokens','outputTokens','totalTokens','reportedRequests','unknownRequests'].every(k=>integer(r.tokenUsage[k])) &&
-    Array.isArray(r.queries) && r.queries.length <= 44 && r.queries.every(q=>validQuery(q,sessionId));
+    Array.isArray(r.queries) && r.queries.length <= 44 && r.queries.every(q=>validQuery(q,sessionId)) && new Set(r.queries.map(q=>q.queryId)).size===r.queries.length;
 }
 export async function loadSummary(base: string, sessionId: string, runId: string) {
   if (!validId(sessionId,'s') || !validId(runId,'r')) throw unavailable();
   const result = JSON.parse(await readText(base,[sessionId,runId,'run-summary.json'],16_000_000));
   if (!validResult(result,sessionId,runId)) throw unavailable();
+  // Source limits must fail here, before entering the storage transaction.
+  // SQLite failures remain fatal; malformed legacy input is skippable.
+  if (Buffer.byteLength(JSON.stringify(publicRun(result)))>2_000_000) throw unavailable();
   return result;
 }
 export async function loadEvidence(base: string, job: StoredJob, ref: {queryId:string;sourceRunId:string;hash:string}) {
@@ -57,11 +60,13 @@ export async function loadEvidence(base: string, job: StoredJob, ref: {queryId:s
 export async function recovery(base: string, job: StoredJob) {
   if (!job.runId || job.status === 'loading') return undefined;
   try {
-    // CheckpointStore validates hashes, dates, ENS proofs and consumed lineage.
-    // Check the registered checkpoint path itself before its internal reads.
-    await readText(base,[job.sessionId,job.runId,'checkpoint.json'],262144);
-    const checked = await CheckpointStore.load(base,job.sessionId,job.runId,defaultLimits);
-    for (const ref of checked.state.queryRefs) await readText(base,[job.sessionId,ref.runId,'queries',ref.queryId,'query.json'],2_000_000);
+    // Route every dependency read (including parents, summaries and ENS proofs)
+    // through the same bounded reader rather than checking paths after reading.
+    await CheckpointStore.load(base,job.sessionId,job.runId,defaultLimits,async(path,max)=>{
+      const rel=relative(base,path);
+      if(rel.startsWith('..')||isAbsolute(rel))throw unavailable();
+      return JSON.parse(await readText(base,rel.split(sep),max));
+    });
     return { sessionId:job.sessionId,runId:job.runId };
   } catch { return undefined; }
 }

@@ -57,7 +57,7 @@ export function createWebServer(options: {config?:()=>Config;run?:typeof runAgen
       // checkpoint reads run. A task may finish before this response is sent.
       const snapshot=db.list(),busyAtSnapshot=Boolean(active);
       const sessions=await Promise.all(snapshot.sessions.map(async s=>({...s,turns:await Promise.all(s.turns.map(async job=>{
-        const candidate=job.status==='interrupted'||job.run?.resumable;
+        const candidate=job.status==='interrupted'||job.run?.resumable||job.status==='failed'&&!job.run&&job.runId;
         const recover=candidate?await recovery(base,job):undefined;
         return{id:job.id,question:job.question,status:job.status,progress:job.progress,error:job.error,resumable:Boolean(recover),
           ...(job.run?{run:{...job.run,resumable:Boolean(recover)}}:{}),...(!job.run&&recover?{recovery:recover}:{})};

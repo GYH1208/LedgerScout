@@ -37,11 +37,11 @@ export class CheckpointStore {
     this.tail = this.tail.then(() => atomicJson(this.path, snapshot));
     return this.tail;
   }
-  static async load(base: string, sessionId: string, runId: string, caps: Record<string, number>) {
+  static async load(base: string, sessionId: string, runId: string, caps: Record<string, number>, readJson: (path:string,max:number)=>Promise<any> = readBounded) {
     if (!validId(sessionId) || !/^r_[A-Za-z0-9_-]+$/.test(runId) || !validId(runId)) invalid();
     const path = join(base, sessionId, runId, 'checkpoint.json');
     try {
-      const c = await readBounded(path, 262144) as Checkpoint;
+      const c = await readJson(path, 262144) as Checkpoint;
       if (c.version !== 1 || c.sessionId !== sessionId || c.runId !== runId || c.closed !== false || c.resumedBy) {
         if (c.resumedBy && validId(c.resumedBy)) throw new Error(`Run already resumed by ${c.resumedBy}`);
         invalid();
@@ -59,11 +59,11 @@ export class CheckpointStore {
       // A staged child cannot run until its parent has durably activated this exact ID.
       if (c.lineage.length > 1) {
         const parentId = c.lineage.at(-2)!;
-        const parent = await readBounded(join(base, sessionId, parentId, 'checkpoint.json'), 262144) as Checkpoint;
+        const parent = await readJson(join(base, sessionId, parentId, 'checkpoint.json'), 262144) as Checkpoint;
         if (parent.sessionId !== sessionId || parent.runId !== parentId || parent.resumedBy !== runId) invalid();
       }
       try {
-        const terminal = await readBounded(join(base, sessionId, runId, 'run-summary.json'), 16_000_000);
+        const terminal = await readJson(join(base, sessionId, runId, 'run-summary.json'), 16_000_000);
         if (terminal.resumable === false || ['completed', 'awaiting_user', 'exhausted'].includes(terminal.status)) invalid();
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       if (!c.counts || !['models', 'tools', 'http'].every(k => integer((c.counts as any)[k])) || c.counts.models > c.limits.maxModelRequests! || c.counts.tools > c.limits.maxToolCalls! || c.counts.http > c.limits.maxHttpRequests!) invalid();
@@ -81,7 +81,7 @@ export class CheckpointStore {
       const queries: QueryResult[] = [];
       for (const ref of c.queryRefs) {
         if (!validId(ref.runId) || !/^r_/.test(ref.runId) || !validId(ref.queryId) || !/^q_/.test(ref.queryId) || !/^[a-f0-9]{64}$/.test(ref.hash)) invalid();
-        const q = await readBounded(join(base, sessionId, ref.runId, 'queries', ref.queryId, 'query.json'), 2_000_000) as QueryResult;
+        const q = await readJson(join(base, sessionId, ref.runId, 'queries', ref.queryId, 'query.json'), 2_000_000) as QueryResult;
         if (q.sessionId !== sessionId || q.runId !== ref.runId || q.queryId !== ref.queryId || hash(q) !== ref.hash) invalid();
         queries.push(q);
       }
@@ -95,7 +95,7 @@ export class CheckpointStore {
         if (c.lineage.includes(q.runId) && (!c.timeWindow || !sameTimeWindow(w, c.timeWindow) || w.snapshot !== c.snapshot || !c.lineage.includes(source.runId))) invalid();
         if (q.status !== 'error' && (q.range.startBlock !== w.startBlock || q.range.endBlock !== w.endBlock)) invalid();
       }
-      const ensProofs = hasEns ? await loadEnsProofs(base, sessionId, c.lineage, c.ensRefs!) : [];
+      const ensProofs = hasEns ? await loadEnsProofs(base, sessionId, c.lineage, c.ensRefs!, readJson) : [];
       if (hasEns) {
         if (c.ensRefs!.length > c.counts.tools || ensProofs.some(p => !c.ensNames!.includes(p.name) || p.status === 'resolved' && p.blockNumber !== c.snapshot)) invalid();
         const resolved = ensProofs.filter(p => p.status === 'resolved');
