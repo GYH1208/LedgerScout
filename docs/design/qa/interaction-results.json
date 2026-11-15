@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-11-15T04:46:21.549Z",
+  "checks": [
+    "empty input disabled; desktop home rendered",
+    "example fill, submit, loading and partial result",
+    "separate citations, full-address copy and Escape focus restoration",
+    "follow-up preserves conversation",
+    "cancel prevents stale completion; explicit resume works",
+    "unknown target clarifies instead of inventing facts",
+    "failed scenario and resume availability",
+    "exhausted scenario and resume availability",
+    "awaiting_user scenario and resume availability",
+    "completed scenario and resume availability",
+    "background completion stays in original session",
+    "balance example has its own layout",
+    "mobile navigation traps and restores focus",
+    "mobile evidence, follow-up and cancellation",
+    "320px viewport has no horizontal page overflow",
+    "no browser console errors or external requests"
+  ],
+  "errors": [],
+  "externalRequests": []
+}

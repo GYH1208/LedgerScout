@@ -1,0 +1,1 @@
+{"name":"@ledgerscout/web-server","version":"0.1.0","private":true,"type":"module","dependencies":{"@ledgerscout/agent-runtime":"0.1.0","@ledgerscout/chain-data":"0.1.0"}}

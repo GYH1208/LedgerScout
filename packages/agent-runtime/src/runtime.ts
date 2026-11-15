@@ -127,7 +127,12 @@ async function execute(options: Options, sessionId: string, recovery?: Awaited<R
     if (addresses.length && !invalidTarget && !namedInput.names.length) { store.data.addresses = addresses; store.data.ensNames = []; store.data.literalAddresses = addresses; }
     const allowedAddresses = new Set(store.data.addresses.map(a => a.toLowerCase()));
     const historyRequested = /上次|上一|刚才|之前|历史结果|已有证据|证据明细|previous|earlier|last query|q_[a-zA-Z0-9-]+/i.test(targetText);
-    const freshRequested = /当前|现在|最新|重新|再查|刷新|current|latest|refresh|recheck/i.test(targetText);
+    // An explicit request to reuse evidence must not become a refresh merely
+    // because it says "不要刷新". Other positive freshness words still win.
+    const refreshIntentText = targetText
+      .replace(/(?:不要|不用|无需|不必|请勿|别)\s*(?:刷新|重新查询|重新获取|再查)/g, '')
+      .replace(/\b(?:do\s+not|don't|without|no)\s+(?:refresh(?:ing)?|recheck(?:ing)?)\b/gi, '');
+    const freshRequested = /当前|现在|最新|重新|再查|刷新|current|latest|refresh|recheck/i.test(refreshIntentText);
     const activeChainQueries = () => [...new Map((service?.all() ?? []).filter(q => chainRuns.has(q.runId)).map(q => [q.toolCallId, q])).values()];
     const canUseEvidence = (q: QueryResult) => chainRuns.has(q.runId) && activeChainQueries().some(active => active.queryId === q.queryId) || historyRequested && !freshRequested &&
       (input.includes(q.queryId) || allowedAddresses.has(q.address.toLowerCase())) &&

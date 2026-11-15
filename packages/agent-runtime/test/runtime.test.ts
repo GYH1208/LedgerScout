@@ -476,3 +476,21 @@ test('real offline tokenizer participates in the Pi query loop without provider 
     assert.equal(result.tokenUsage.unknownRequests, 2);
   } finally { counter.close(); await h.close(); }
 });
+
+test('explicit old query plus do-not-refresh wording permits historical facts without fetching', async()=>{
+  const h=await setup();let turns=0;
+  try{
+    const first=await h.run(async r=>++turns===1?toolCall():draft(r));const q=first.queries[0]!, count=h.calls.length;
+    for(const suffix of ['不要刷新数据','do not refresh data',"don't refresh data"]){
+      const next=await h.run(async()=>({content:JSON.stringify({kind:'answer',queryIds:[q.queryId],claims:[{queryId:q.queryId,field:'eth'}]})}),{sessionId:first.sessionId,input:`请基于查询 ${q.queryId} 的现有证据解释余额，${suffix}`});
+      assert.equal(next.status,'completed',suffix);assert.equal(next.counts.http,0);assert.equal(next.queries[0]?.queryId,q.queryId);assert.match(next.answer,/历史查询证据/);
+    }
+    assert.equal(h.calls.length,count);
+  }finally{await h.close();}
+});
+test('positive fresh intent still blocks old evidence after a negated refresh phrase',async()=>{
+ const h=await setup();let turns=0;
+ try{const first=await h.run(async r=>++turns===1?toolCall():draft(r));const q=first.queries[0]!;
+ const next=await h.run(async()=>({content:JSON.stringify({kind:'answer',queryIds:[q.queryId],claims:[{queryId:q.queryId,field:'eth'}]})}),{sessionId:first.sessionId,input:`不要刷新 ${q.queryId}，但我要查询当前余额`});assert.notEqual(next.status,'completed');assert.equal(next.queries.length,0);
+ }finally{await h.close();}
+});

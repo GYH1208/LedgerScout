@@ -1,0 +1,12 @@
+{
+  "transport": "browser-intercepted offline fixture; no provider requests",
+  "checks": [
+    "exact balance",
+    "evidence identity",
+    "stale evidence invalidation",
+    "cancel/resume availability",
+    "reload retains server session",
+    "mobile evidence drawer"
+  ],
+  "errors": []
+}
