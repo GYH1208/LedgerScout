@@ -36,6 +36,7 @@ export class EquityTransport {
   private ownsTwelveQuota=false;
   private localRemaining?:number;
   private readonly verifiedFilings=new Set<string>();
+  private readonly verifiedPrimaryFilings=new Set<string>();
   constructor(private readonly config:EquityConfig,private readonly options:Options={}) {this.quota=options.quota;this.twelveQuota=options.twelveQuota;}
   get requestCount():number{return this.attempts;}
   close():void {if(this.ownsQuota){this.quota?.close();this.quota=undefined;this.ownsQuota=false;}if(this.ownsTwelveQuota){this.twelveQuota?.close();this.twelveQuota=undefined;this.ownsTwelveQuota=false;}}
@@ -70,12 +71,26 @@ export class EquityTransport {
     if(!this.verifiedFilings.has(url))throw new EquityDataError('FILING_NOT_VERIFIED');
     return await this.perform('sec','filing',url,undefined,true) as string;
   }
+  /** Only a submissions-verified primary can authorize its own accession directory. */
+  async filingIndex(primaryUrl:string):Promise<unknown> {
+    if(!/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/\d{1,10}\/\d{18}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.(?:htm|html|txt)$/i.test(primaryUrl)||primaryUrl.includes('..'))throw new EquityDataError('INVALID_FILING_INDEX');
+    if(!this.verifiedPrimaryFilings.has(primaryUrl))throw new EquityDataError('FILING_INDEX_NOT_VERIFIED');
+    const directoryUrl=primaryUrl.slice(0,primaryUrl.lastIndexOf('/'));
+    const body=await this.perform('sec','filing-index',`${directoryUrl}/index.json`,undefined,false);
+    const directory=(body as {directory?:{name?:unknown;item?:unknown}}|null)?.directory;
+    if(directory?.name!==new URL(directoryUrl).pathname||!Array.isArray(directory.item)||directory.item.length>10000)throw new EquityDataError('INVALID_FILING_INDEX');
+    for(const item of directory.item){
+      const name=item&&typeof item==='object'?(item as {name?:unknown}).name:undefined;
+      if(typeof name==='string'&&/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.(?:htm|html|txt)$/i.test(name)&&!name.includes('..'))this.verifiedFilings.add(`${directoryUrl}/${name}`);
+    }
+    return body;
+  }
   private captureFilings(body:unknown,cik:string) {
     const b=body as {cik?:unknown;filings?:{recent?:{accessionNumber?:unknown[];primaryDocument?:unknown[]}}};
     if(!b||String(b.cik).padStart(10,'0')!==cik)return;
     const r=b.filings?.recent;
     if(!Array.isArray(r?.accessionNumber)||!Array.isArray(r.primaryDocument))return;
-    r.accessionNumber.slice(0,1000).forEach((a,i)=>{const url=filingPath(cik,a,r.primaryDocument![i]);if(url)this.verifiedFilings.add(url);});
+    r.accessionNumber.slice(0,1000).forEach((a,i)=>{const url=filingPath(cik,a,r.primaryDocument![i]);if(url){this.verifiedFilings.add(url);this.verifiedPrimaryFilings.add(url);}});
   }
   private check():void {
     if(this.options.signal?.aborted)throw new EquityDataError('CANCELLED');
@@ -123,7 +138,7 @@ export class EquityTransport {
           const response=await (this.options.fetch??fetch)(url,{signal:controller.signal,redirect:'error',headers:provider==='sec'?{'User-Agent':this.config.secUserAgent,Accept:text?'text/html,text/plain':'application/json'}:provider==='twelve-data'?{Accept:'application/json',Authorization:`apikey ${this.config.twelveDataKey}`}:{Accept:'application/json'}});
           if(response.status===429){this.halted='RATE_LIMIT';throw new EquityDataError('RATE_LIMIT',429);}
           if(!response.ok)throw new EquityDataError([401,402,403].includes(response.status)?'PERMISSION_DENIED':response.status>=500?'UPSTREAM_FAILURE':'HTTP_ERROR',response.status);
-          const maximum=endpoint.startsWith('api/xbrl/companyfacts/')?32*1024*1024:2*1024*1024;
+          const maximum=endpoint.startsWith('api/xbrl/companyfacts/')?32*1024*1024:provider==='sec'&&endpoint==='filing'?16*1024*1024:2*1024*1024;
           if(Number(response.headers.get('content-length'))>maximum) {await response.body?.cancel();throw new EquityDataError('RESPONSE_SIZE');}
           const reader=response.body?.getReader(); const chunks:Uint8Array[]=[];let size=0;
           if(reader)try{for(;;){const next=await reader.read();if(next.done)break;size+=next.value.byteLength;if(size>maximum)throw new EquityDataError('RESPONSE_SIZE');chunks.push(next.value);}}finally{await reader.cancel().catch(()=>{});}

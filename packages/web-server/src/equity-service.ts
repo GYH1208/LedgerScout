@@ -14,6 +14,8 @@ import { screenCompanies,validateFilters } from '../../equity-data/src/screening
 import { MARKET_SYMBOLS,type CompanySnapshot,type SourceRef,type Filing } from '../../equity-data/src/types.js';
 import { EquityStore,validSymbol,type EquityJob,type EquityCheckpoint } from './equity-store.js';
 import { runEquityResearch } from './equity-runtime.js';
+import { createDiscoveryService,DiscoveryHttpError } from './discovery-service.js';
+import { retrieveChunks } from '../../equity-data/src/documents.js';
 
 export class EquityHttpError extends Error{constructor(readonly status:number,message:string){super(message);}}
 export type EquityServiceOptions={directory:string;config?:()=>EquityConfig;request?:RequestModel;fetch?:typeof fetch;modelConfig?:typeof loadRuntimeConfig};
@@ -36,11 +38,12 @@ export function createEquityService(options:EquityServiceOptions){
   const safe=<T>(value:T)=>redact(value,secrets()) as T;
   const getQuota=()=>quota??=new DailyQuota(join(config().outputDirectory,'equity-quota.sqlite'),config().dailyLimit);
   const getTwelveQuota=()=>twelveQuota??=new TwelveDataQuota(join(config().outputDirectory,'twelve-data-quota.sqlite'),config().twelveDataDailyLimit??600);
+  const discovery=createDiscoveryService({...options,equity:store,externalBusy:()=>Boolean(active)||accepting});
   const lastRefresh=store.refreshJob();
   if(lastRefresh?.status==='loading')store.setRefreshJob({...lastRefresh,status:'interrupted',error:'更新已中断；已完成的缓存保留，选择剩余股票后再次更新。'});
 
   function start(id:string,job:EquityJob|Record<string,unknown>,work:(signal:AbortSignal)=>Promise<void>){
-    if(active)fail(409,'已有研究或更新正在执行');
+    if(active||discovery.busy)fail(409,'已有研究或更新正在执行');
     const controller=new AbortController();
     const running={id,controller,task:Promise.resolve(),job};active=running;
     running.task=Promise.resolve().then(()=>work(controller.signal)).catch(()=>{
@@ -98,6 +101,8 @@ export function createEquityService(options:EquityServiceOptions){
     let runtimeStarted=false;
     try{
       let snapshot:CompanySnapshot|undefined=recovery?.snapshot,id=recovery?.cp.queryIds[0],historical:EquityJob|undefined;
+      const themeContext=job.discoveryContext&&!recovery?await discovery.context(job.discoveryContext,job.symbol):undefined;
+      if(themeContext){snapshot=themeContext.company.snapshot;id=themeContext.company.snapshotId;}
       if(!snapshot&&!refresh){
         const session=store.session(job.sessionId)!;
         const requested=job.question.match(/q_[A-Za-z0-9_-]+/g)??[];
@@ -113,6 +118,15 @@ export function createEquityService(options:EquityServiceOptions){
       if(snapshot.security.symbol!==job.symbol||snapshot.security.kind!=='common-stock')fail(422,'证券身份未通过核验');
       if(!id)throw Error('Snapshot missing');
       if(!recovery)job.queries=historical?structuredClone(historical.queries):[{queryId:id,symbol:job.symbol,source:'company_snapshot',fetchedAt:snapshot.fetchedAt,data:{security:snapshot.security,metrics:snapshot.metrics}}];
+      if(themeContext){
+        const ref=await store.evidence(job.symbol,'AI application theme context',safe(themeContext.summary));
+        job.queries.push({queryId:ref.id,symbol:job.symbol,source:'AI application theme context',fetchedAt:ref.fetchedAt,data:themeContext.summary});
+        for(const d of themeContext.documents){
+          const text=retrieveChunks(d,job.question,{limit:3}).chunks.map(c=>c.text).join('\n');
+          const proof=await store.evidence(job.symbol,d.sourceKind==='sec'?'SEC disclosure':'Issuer disclosure',safe({accession:d.accession??d.id,text,url:d.url,filed:d.publishedAt,sourceDocumentId:d.id}));
+          job.queries.push({queryId:proof.id,symbol:job.symbol,source:d.sourceKind==='sec'?'SEC disclosure':'Issuer disclosure',fetchedAt:proof.fetchedAt,data:{accession:d.accession??d.id,filed:d.publishedAt}});
+        }
+      }
       if(recovery)job.queries=recovery.cp.queryIds.map(queryId=>recoverySourceQuery(queryId));
       let peers:CompanySnapshot[]=[];
       if(recovery||historical){for(const q of job.queries.filter(q=>q.source==='peer_snapshot'))peers.push((await store.readEvidence(q.queryId)).data);}
@@ -136,7 +150,9 @@ export function createEquityService(options:EquityServiceOptions){
         if(index<0||current.filings?.recent?.primaryDocument?.[index]!==filing.primaryDocument)throw Error('FILING_NO_LONGER_VERIFIABLE');
         const html=await new EquityProvider(transport).getFiling(filing);
         toolSignal.throwIfAborted();
-        const text=html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim().slice(0,30_000);
+        const {buildDocument}=await import('../../equity-data/src/documents.js');
+        const document=buildDocument({id:`d_${randomUUID()}`,symbol:job.symbol,cik:snapshot!.security.cik,sourceKind:'sec',url:filing.url,form:filing.form,accession:filing.accession,publishedAt:filing.filed,html});
+        const text=retrieveChunks(document,job.question,{limit:3}).chunks.map(c=>c.text).join('\n');
         const proof=await store.evidence(job.symbol,'SEC disclosure',safe({accession:filing.accession,url:filing.url,filed:filing.filed,text,truncated:text.length>=30_000}));
         job.queries.push({queryId:proof.id,symbol:job.symbol,source:'SEC disclosure',fetchedAt:proof.fetchedAt,data:{accession:filing.accession,filed:filing.filed}});store.finish(safe(job));
         return{queryId:proof.id,text};
@@ -145,7 +161,7 @@ export function createEquityService(options:EquityServiceOptions){
       job.counts.elapsedMs=initialElapsed+Math.ceil(performance.now()-startTime);
       const request=options.request??createDeepSeekRequest(modelConfig());
       runtimeStarted=true;
-      const result=await runEquityResearch({job,snapshot,peers,request,signal,checkpoint:recovery?.cp,readDisclosure,secrets:secrets(),saveCheckpoint:async cp=>{store.checkpoint(cp);store.finish(safe(job));}});
+      const result=await runEquityResearch({job,snapshot,peers,request,signal,checkpoint:recovery?.cp,readDisclosure,readSavedDisclosure:async queryId=>{if(!job.queries.some(q=>q.queryId===queryId&&['SEC disclosure','Issuer disclosure'].includes(q.source)))throw Error('UNAUTHORIZED_EVIDENCE');const q=await store.readEvidence(queryId);return{queryId,text:String(q.data.text),source:q.source};},secrets:secrets(),saveCheckpoint:async cp=>{store.checkpoint(cp);store.finish(safe(job));}});
       store.finish(safe(result));
     }catch(error){
       if(runtimeStarted)throw error;
@@ -156,12 +172,13 @@ export function createEquityService(options:EquityServiceOptions){
 
   async function route(method:string,path:string,body:Record<string,unknown>,params:URLSearchParams):Promise<RouteResult>{
     if(closed)fail(503,'研究服务正在关闭');
+    if(path.startsWith('/discovery/')){try{return await discovery.route(method,path.slice('/discovery'.length),body,params);}catch(error){if(error instanceof DiscoveryHttpError)throw new EquityHttpError(error.status,error.message);throw error;}}
     if(method==='GET'&&path==='/state'){
       const c=configured(),sessions=store.sessions();
       for(const s of sessions)for(const j of s.turns)j.resumable=Boolean(await readyToResume(s.id,j.runId));
       const companies=await store.companies();
       let used=0,marketUsed=0,quotaError='';try{used=getQuota().usage();marketUsed=getTwelveQuota().usage();}catch{quotaError='行情额度记录无法读取；已停止供应商更新。';}
-      return{status:200,value:safe({configured:c,capabilities:{market:c.twelveData,research:c.deepseek&&(c.fmp&&c.sec||companies.length>0),secReports:c.sec},busy:Boolean(active),pool:store.pool(),market:store.marketSeries().length&&store.marketSeries().every(s=>s.source===TWELVE_PRICE_SOURCE)?store.market():null,companies,sessions,activeJob:active?.job??store.refreshJob(),quota:{used,limit:config().dailyLimit},marketQuota:{used:marketUsed,limit:config().twelveDataDailyLimit??600,provider:'twelve-data'},coverage:store.coverage(),...(quotaError?{error:quotaError}:{})})};
+      return{status:200,value:safe({configured:c,capabilities:{market:c.twelveData,research:c.deepseek&&(c.fmp&&c.sec||companies.length>0),secReports:c.sec},busy:Boolean(active)||discovery.busy,pool:store.pool(),market:store.marketSeries().length&&store.marketSeries().every(s=>s.source===TWELVE_PRICE_SOURCE)?store.market():null,companies,sessions,activeJob:active?.job??discovery.activeJob??store.refreshJob(),quota:{used,limit:config().dailyLimit},marketQuota:{used:marketUsed,limit:config().twelveDataDailyLimit??600,provider:'twelve-data'},coverage:store.coverage(),...(quotaError?{error:quotaError}:{})})};
     }
     const evidence=/^\/evidence\/(j_[A-Za-z0-9_-]+)\/(q_[A-Za-z0-9_-]+)$/.exec(path);
     if(method==='GET'&&evidence){
@@ -174,11 +191,11 @@ export function createEquityService(options:EquityServiceOptions){
     }
     if(method!=='POST')fail(404,'美股接口不存在');
     if(path==='/cancel'){
-      only(body,['jobId']);if(typeof body.jobId!=='string')fail(400,'缺少运行ID');const requested=active?.id===body.jobId;
+      only(body,['jobId']);if(discovery.activeJob?.id===body.jobId)return discovery.route('POST','/cancel',body,new URLSearchParams());if(typeof body.jobId!=='string')fail(400,'缺少运行ID');const requested=active?.id===body.jobId;
       if(requested)active!.controller.abort(Error('User cancelled'));return{status:200,value:{requested}};
     }
     if(path==='/pool'){
-      only(body,['symbols']);if(active)fail(409,'请等待本轮结束后修改股票池');
+      only(body,['symbols']);if(active||discovery.busy)fail(409,'请等待本轮结束后修改股票池');
       if(!Array.isArray(body.symbols)||body.symbols.some(s=>!validSymbol(s)))fail(400,'请输入有效的股票代码');
       try{return{status:200,value:store.setPool(body.symbols as string[])};}catch{fail(400,'股票池最多10只，代码不可重复');}
     }
@@ -194,7 +211,7 @@ export function createEquityService(options:EquityServiceOptions){
         return{status:200,value:safe(result)};
       }catch(error){if(error instanceof EquityHttpError)throw error;fail(400,'筛选条件不支持；请选择已支持字段和数值条件');}
     }
-    if(active)fail(409,'已有研究或更新正在执行');
+    if(active||discovery.busy)fail(409,'已有研究或更新正在执行');
     if(path==='/refresh'){
       only(body,['kind','symbols']);const c=configured();
       if(body.kind!=='market'&&body.kind!=='stocks')fail(400,'无效更新类型');
@@ -225,9 +242,10 @@ export function createEquityService(options:EquityServiceOptions){
       });return{status:202,value:{jobId:job.id}};
     }
     if(path==='/research'){
-      only(body,['symbol','question','sessionId','screenContext','refresh']);
+      only(body,['symbol','question','sessionId','screenContext','refresh','discoveryContext']);
       if(!validSymbol(body.symbol)||typeof body.question!=='string'||!body.question.trim()||body.question.length>4000||body.refresh!==undefined&&typeof body.refresh!=='boolean'||body.sessionId!==undefined&&typeof body.sessionId!=='string')fail(400,'请提供准确的股票代码和1–4000字符的研究问题');
       const symbol=body.symbol as string,question=String(safe(body.question));
+      if(body.discoveryContext){if(body.sessionId||body.refresh)fail(400,'主题研究请使用独立的新会话及已保存快照');await discovery.context(body.discoveryContext,symbol);}
       if(body.sessionId){const session=store.session(String(body.sessionId));if(!session)fail(404,'未找到美股会话');if(session.symbol!==symbol)fail(400,'会话股票固定，请新建研究');}
       const c=configured();if(!c.deepseek)fail(503,'请先在本地 .env 配置 DeepSeek');
       const cached=await store.company(symbol);if((body.refresh||!cached)&&(!c.fmp||!c.sec))fail(503,'首次或刷新研究需配置 FMP_API_KEY 和 SEC_USER_AGENT');
@@ -236,7 +254,7 @@ export function createEquityService(options:EquityServiceOptions){
         try{screenContext={filters:validateFilters(v.filters),...(typeof v.snapshotId==='string'?{snapshotId:v.snapshotId}:{})};if(screenContext.snapshotId){const p=await store.readEvidence(screenContext.snapshotId);if(p.symbol!==symbol||p.source!=='SEC / FMP normalized snapshot')fail(400,'筛选快照与股票不匹配');}}catch{fail(400,'无效筛选背景或快照引用');}}
       const requested=question.match(/q_[A-Za-z0-9_-]+/g)??[];
       if(requested.length){const session=body.sessionId?store.session(String(body.sessionId)):undefined;const allowed=new Set(session?.turns.flatMap(t=>t.queries.map(q=>q.queryId))??[]);if(body.refresh||requested.some(q=>!allowed.has(q)))fail(400,'历史证据必须来自本会话；刷新不能与旧证据ID混用');}
-      const job=store.accept(symbol,question,body.sessionId as string|undefined,screenContext);start(job.id,job,signal=>runResearch(job,body.refresh===true,signal));return{status:202,value:{jobId:job.id,sessionId:job.sessionId}};
+      const job=store.accept(symbol,question,body.sessionId as string|undefined,screenContext);if(body.discoveryContext){job.discoveryContext=body.discoveryContext as EquityJob['discoveryContext'];store.finish(job);}start(job.id,job,signal=>runResearch(job,body.refresh===true,signal));return{status:202,value:{jobId:job.id,sessionId:job.sessionId}};
     }
     if(path==='/resume'){
       only(body,['sessionId','runId']);if(typeof body.sessionId!=='string'||typeof body.runId!=='string')fail(400,'缺少源会话或运行ID');
@@ -250,8 +268,8 @@ export function createEquityService(options:EquityServiceOptions){
   }
   async function guardedRoute(method:string,path:string,body:Record<string,unknown>,params:URLSearchParams){
     if(method!=='POST'||!['/research','/refresh','/resume'].includes(path))return route(method,path,body,params);
-    if(accepting||active)fail(409,'已有研究或更新正在准备或执行');
+    if(accepting||active||discovery.busy)fail(409,'已有研究或更新正在准备或执行');
     accepting=true;try{return await route(method,path,body,params);}finally{accepting=false;}
   }
-  return {route:guardedRoute,get busy(){return Boolean(active)||accepting;},wait:async()=>{await active?.task;},close:async()=>{closed=true;active?.controller.abort();await active?.task;quota?.close();twelveQuota?.close();store.close();}};
+  return {route:guardedRoute,get busy(){return Boolean(active)||accepting;},wait:async()=>{await active?.task;await discovery.wait();},close:async()=>{closed=true;active?.controller.abort();await active?.task;await discovery.close();quota?.close();twelveQuota?.close();store.close();}};
 }

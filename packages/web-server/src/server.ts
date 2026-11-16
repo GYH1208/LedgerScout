@@ -9,9 +9,9 @@ import { createEquityService, EquityHttpError, type EquityServiceOptions } from 
 
 type Config = ReturnType<typeof loadRuntimeConfig>;
 class HttpError extends Error { constructor(readonly status: number, message: string) {super(message);} }
-async function readBody(req: IncomingMessage) {
+async function readBody(req: IncomingMessage,limit=16384) {
   let size=0;const chunks:Buffer[]=[];
-  for await (const chunk of req) {size+=Buffer.byteLength(chunk);if(size>16384)throw new HttpError(413,'请求过大');chunks.push(Buffer.from(chunk));}
+  for await (const chunk of req) {size+=Buffer.byteLength(chunk);if(size>limit)throw new HttpError(413,'请求过大');chunks.push(Buffer.from(chunk));}
   try {const v=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(!v||typeof v!=='object'||Array.isArray(v))throw Error();return v as Record<string,unknown>;}
   catch {throw new HttpError(400,'请求必须为 JSON 对象');}
 }
@@ -59,8 +59,8 @@ export function createWebServer(options: {config?:()=>Config;run?:typeof runAgen
     if(url.pathname.startsWith('/api/equity/')){
       if(!equity||equityError)throw new HttpError(503,equityError||'美股服务尚未就绪');
       const path=url.pathname.slice('/api/equity'.length);
-      const body=req.method==='POST'?await readBody(req):{};
-      if(active&&req.method==='POST'&&['/research','/refresh','/resume'].includes(path))throw new HttpError(409,'已有链上研究正在执行，请等待或取消后重试');
+      const body=req.method==='POST'?await readBody(req,path.startsWith('/discovery/')?2*1024*1024:16384):{};
+      if(active&&req.method==='POST'&&(['/research','/refresh','/resume'].includes(path)||path.startsWith('/discovery/')&&path!=='/discovery/cancel'))throw new HttpError(409,'已有链上研究正在执行，请等待或取消后重试');
       const result=await equity.route(req.method??'GET',path,body,url.searchParams);
       return send(res,result.status,result.value);
     }
