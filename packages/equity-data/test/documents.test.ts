@@ -42,5 +42,7 @@ test('unlinked table-of-contents titles cannot promote subsequent cover text int
 test('indexed text is bounded with an explicit extraction warning and oversized HTML is rejected',()=>{
  const d=buildDocument({...input,html:`<p>${'disclosure '.repeat(60000)}</p>`});
  assert.ok(d.text.length<=500000);assert.ok(d.warnings.some(w=>/truncat|limit/i.test(w)));
- assert.throws(()=>buildDocument({...input,html:'x'.repeat(2097153)}),/RESPONSE_SIZE/);
+ const large=buildDocument({...input,html:`<h2>Item 1. Business</h2><p>${'disclosure '.repeat(200000)}</p>`});
+ assert.ok(large.text.length<=500000);assert.ok(large.warnings.some(w=>/truncat|limit/i.test(w)));assert.ok(large.sections.some(s=>s.kind==='business'));
+ assert.throws(()=>buildDocument({...input,html:'x'.repeat(16777217)}),/RESPONSE_SIZE/);
 });

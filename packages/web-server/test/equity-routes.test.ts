@@ -20,6 +20,11 @@ test('local HTTP equity endpoints honor origin checks and report domain configur
     const accepted=await fetch(base+'/api/equity/pool',{method:'POST',headers,body:JSON.stringify({symbols:['AAPL']})});assert.equal(accepted.status,200);
     const missing=await fetch(base+'/api/equity/refresh',{method:'POST',headers,body:JSON.stringify({kind:'market'})});assert.equal(missing.status,503);
     assert.equal(JSON.stringify(await missing.json()).includes('offline-model-secret'),false);
+    const discovery=await fetch(base+'/api/equity/discovery/state');assert.equal(discovery.status,200);const ds=await discovery.json() as any;assert.equal(ds.coverage.prepared,false);
+    const members=Array.from({length:30},(_,i)=>({symbol:'A'+i,name:'长'.repeat(200),themes:['workflow'],sources:[]}));
+    const bodyText=JSON.stringify({expectedVersion:ds.universe.version,members});assert.ok(Buffer.byteLength(bodyText)>16384);
+    const catalog=await fetch(base+'/api/equity/discovery/universe',{method:'POST',headers,body:bodyText});assert.equal(catalog.status,200);
+    const forbiddenDiscovery=await fetch(base+'/api/equity/discovery/universe',{method:'POST',headers:{...headers,origin:'https://untrusted.invalid'},body:bodyText});assert.equal(forbiddenDiscovery.status,403);
     const chain=await fetch(base+'/api/state');assert.equal(chain.status,200);
   }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));await server.shutdown;await rm(dir,{recursive:true,force:true});}
 });

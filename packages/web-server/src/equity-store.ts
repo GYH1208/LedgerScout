@@ -13,6 +13,7 @@ export type EquityJob = {
   status:'loading'|'completed'|'partial'|'awaiting_user'|'failed'|'cancelled'|'exhausted'|'interrupted';
   createdAt:string;answer?:{facts:string[];analysis:string;dataGaps:string[];sourceRefs:string[]};
   counts:EquityCounts;tokenUsage:EquityUsage;queries:EquityQuery[];error?:string;resumable?:boolean;
+  discoveryContext?:{jobId:string;opportunityId:string;symbol:string};
   resumeOf?:string;screenContext?:{filters:ScreenFilter[];snapshotId?:string};
 };
 export type EquityCheckpoint = {

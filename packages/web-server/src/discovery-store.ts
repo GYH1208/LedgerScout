@@ -119,12 +119,14 @@ export class DiscoveryStore {
     if(job.symbols.some(s=>!job.input.members.some(m=>m.symbol===s)))throw Error('Job symbol outside frozen catalog');
     for(const ledger of [job.counts,job.tokenUsage])if(!ledger||Object.values(ledger).some(v=>!Number.isSafeInteger(v)||v<0))throw Error('Invalid job budget counters');
     if(!Number.isSafeInteger(job.reservedMs)||job.reservedMs<0)throw Error('Invalid job reserved time');
+    for(const key of ['aggregationRequests','aggregationCompleted'] as const)if(job[key]!==undefined&&(!Number.isSafeInteger(job[key])||job[key]!<0||job[key]!>2))throw Error('Invalid aggregation progress');
     const prior=this.job(job.id);
     if(prior){
       if(prior.status!=='loading'&&job.status==='loading')throw Error('Terminal job requires explicit resume');
       for(const key of ['kind','createdAt','symbols','input','resumeOf','resumedBy'] as const)if(canonical(job[key])!==canonical(prior[key]))throw Error('Job frozen input or source identity changed');
       for(const key of Object.keys(prior.counts) as (keyof DiscoveryJob['counts'])[])if(job.counts[key]<prior.counts[key])throw Error('Job budget cannot decrease');
       for(const key of ['inputTokens','outputTokens','totalTokens'] as const)if(job.tokenUsage[key]<prior.tokenUsage[key])throw Error('Job usage cannot decrease');
+      for(const key of ['aggregationRequests','aggregationCompleted'] as const)if((job[key]??0)<(prior[key]??0))throw Error('Aggregation progress cannot decrease');
     }
     const serialized=body(job);this.db.prepare('INSERT INTO discovery_jobs VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body,hash=excluded.hash').run(job.id,serialized,hash(serialized),job.createdAt,job.resumedBy??null);
   }

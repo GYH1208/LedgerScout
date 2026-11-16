@@ -1,6 +1,6 @@
 # AI Application Discovery Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Deliver source-backed AI application theme discovery, candidate-company handoff and user-confirmed investment-thesis review for a 12–24 month horizon.
 
@@ -40,25 +40,25 @@
 
 ### Task 1: Contracts and approved-plan baseline
 
-- [ ] Write `discovery-contracts.test.ts`: catalog rejects31/duplicates/invalid theme and untrusted source configuration; accepts pending entries without silently granting verification.
-- [ ] Run it RED, implement types and validation, run GREEN. Type-only contracts also define durable frozen task input and source IDs.
-- [ ] Record existing test baseline and approval in progress ledger. Commit contracts+approved spec+plan.
+- [x] Write `discovery-contracts.test.ts`: catalog rejects31/duplicates/invalid theme and untrusted source configuration; accepts pending entries without silently granting verification.
+- [x] Run it RED, implement types and validation, run GREEN. Type-only contracts also define durable frozen task input and source IDs.
+- [x] Record existing test baseline and approval in progress ledger. Commit contracts+approved spec+plan.
 
 ### Task 2: Documents and official source reader
 
 **Produces:** `buildDocument(input):DiscoveryDocument`, `retrieveChunks(document,query,{offset?,limit?}):{chunks,total,nextOffset}`, `validateOfficialSource(source):OfficialSource`, `discoverOfficialLinks(html,source,pageUrl):{documents,nextPage?}`, `readOfficialPage(source,url,{fetch?,signal?,beforeRequest?}):Promise<{html,url,fetchedAt}>`.
 
-- [ ] Tests RED: body headings afterTOC, escaped entities/boilerplate removal, chunk offset roundtrip, fallback extraction, paging, hostile link/redirect/private host, cancellation and max response, real allowed links only.
-- [ ] Implement bounded parsing/indexing and source-host/path validation; max2MB bodies, HTTPS public exact registered scope. No scripts/rendering/search or URLs inferred by model.
-- [ ] Tests GREEN; export source contracts. Commit.
+- [x] Tests RED: body headings afterTOC, escaped entities/boilerplate removal, chunk offset roundtrip, fallback extraction, paging, hostile link/redirect/private host, cancellation and max response, real allowed links only.
+- [x] Implement bounded parsing/indexing and source-host/path validation; SEC filing body max16MiB / issuer body max2MiB, indexed text max500000 characters, HTTPS public exact registered scope. No scripts/rendering/search or URLs inferred by model.
+- [x] Tests GREEN; export source contracts. Commit.
 
 ### Task 3: Catalog, evidence, thesis and review persistence
 
 **Produces:** `DiscoveryStore(directory)` with `universe/setUniverse`, `saveDocument/document/documents`, `saveJob/job/jobs/claimResume`, `confirmThesis/thesis/theses`, `saveProposal/proposal/resolveProposal`, `close`; immutable file integrity and transactional optimistic versions. `compareSnapshots(previous,next):MetricChange[]`, `validateThesis(input):ThesisInput`.
 
-- [ ] Tests RED: pool remains untouched,30-limit, document tamper/path rejection, catalog history and task hash, interrupted restart, atomic duplicate recovery, explicit thesis confirm, rejected/stale proposal, immutable older thesis, missing/restated/newperiod changes and gap resolution reason.
-- [ ] Implement dedicated SQLite schema with consistent migration backup; no constructor network calls. Store snippets separately from small state projections. Preserve source timestamps and content identity.
-- [ ] Tests GREEN; commit.
+- [x] Tests RED: pool remains untouched,30-limit, document tamper/path rejection, catalog history and task hash, interrupted restart, atomic duplicate recovery, explicit thesis confirm, rejected/stale proposal, immutable older thesis, missing/restated/newperiod changes and gap resolution reason.
+- [x] Implement dedicated SQLite schema with consistent migration backup; no constructor network calls. Store snippets separately from small state projections. Preserve source timestamps and content identity.
+- [x] Tests GREEN; commit.
 
 ### Task 4: Source acquisition and discovery HTTP workflow
 
@@ -66,27 +66,27 @@
 
 **Produces routes:** GET `/state`, `/documents/:id?query=&offset=`, `/jobs/:id`, `/theses/:id`; POST `/universe`, `/refresh`, `/scan`, `/theses`, `/review`, `/proposals/:id`, `/cancel`, `/resume`, `/handoff` under `/api/equity/discovery`.
 
-- [ ] Tests RED: browse no network/model, frozen catalog<=30 with pending source edits, source ownership from verified company profile/domain or actual official-site link, updates<=5,32 aggregate HTTP attempts, stop onquota/rate/cancel, maxindexpages/bodies, source checked/unchanged/partial status and global workload serialization.
-- [ ] Implement explicit refresh using existing cached profiles/SEC data and normalized companies; add parsed SEC documents plus constrained official sources. A pending URL cannot grant itself trust. Fresh citations/ownership checks count toward one task's budget.
-- [ ] Freeze selected snapshot/document IDs before async scan/review admission. Candidate handoff validates chosen opportunity/company and adds immutable theme context without relaxing fixed-symbol sessions.
-- [ ] Tests GREEN; commit.
+- [x] Tests RED: browse no network/model, frozen catalog<=30 with pending source edits, source ownership from verified company profile/domain or actual official-site link, updates<=5,32 aggregate HTTP attempts, stop onquota/rate/cancel, maxindexpages/bodies, source checked/unchanged/partial status and global workload serialization.
+- [x] Implement explicit refresh using existing cached profiles/SEC data and normalized companies; add parsed SEC documents plus constrained official sources. A pending URL cannot grant itself trust. Fresh citations/ownership checks count toward one task's budget.
+- [x] Freeze selected snapshot/document IDs before async scan/review admission. Candidate handoff validates chosen opportunity/company and adds immutable theme context without relaxing fixed-symbol sessions.
+- [x] Tests GREEN; commit.
 
 ### Task 5: Staged analysis, thesis conditions and change review
 
 **Produces:** `runDiscoveryTask(options):Promise<DiscoveryJob>` and bounded budget helper used by refresh as well as analysis. All stages persist progress and use frozen original sources.
 
-- [ ] Tests RED using actual Pi with offline model: per-company isolated inputs,10-company read/model caps,0 opportunities, mixed issuer/report/application scopes, foreign citations rejected, missing AI metrics remainunknown, max15/12/32/300s, model timeout/cancel, frozen one-consumer cumulative resume, source hash mismatch and input truncation gaps.
-- [ ] Implement company extracts then citation-validated aggregation with0–5 opportunities; structured results distinguish issuer claims/analysis and exact original quotes. No ordinal return score.
-- [ ] Implement deterministic metric comparisons and explicit review proposals; no-evidence refresh skips model. Confirmation/rejection is idempotent and tied to original thesis version; clearing prior gaps requires new evidence or an explicit user reason.
-- [ ] Tests GREEN; commit.
+- [x] Tests RED using actual Pi with offline model: per-company isolated inputs,10-company read/model caps,0 opportunities, mixed issuer/report/application scopes, foreign citations rejected, missing AI metrics remainunknown, max15/12/32/300s, model timeout/cancel, frozen one-consumer cumulative resume, source hash mismatch and input truncation gaps.
+- [x] Implement company extracts then citation-validated aggregation with0–5 opportunities; structured results distinguish issuer claims/analysis and exact original quotes. No ordinal return score.
+- [x] Implement deterministic metric comparisons and explicit review proposals; no-evidence refresh skips model. Confirmation/rejection is idempotent and tied to original thesis version; clearing prior gaps requires new evidence or an explicit user reason.
+- [x] Tests GREEN; commit.
 
 ### Task 6: Complete React flow, acceptance and documentation
 
-- [ ] Write frontend API/selection/confirmation tests RED; implement two new tabs, catalog/source edits, current task progress, cancel/resume, proof pagination, opportunity handoff, editable thesis draft/conditions and accept/reject review with history. Retain existing visual language and live-only evidence.
-- [ ] Update API/README/AGENTS docs; source/catalog identities and current coverage visible, no demo conclusions. Tests GREEN, root typecheck, app tests and production build.
-- [ ] Prepare a curated pending seed catalog with official source metadata; actual free-source gate:5 verified companies,3 with locatable AI application正文,2 themes. Reuse existing data before explicit bounded refresh. Record real limitations if source gate fails rather than certify fixture coverage.
-- [ ] Actual local HTTP/SQLite/Pi workflow: scan→company→confirmthesis→new evidence/review→accept/reject, cancel/restart/explicitresume, historical versions; live model call limited and documented. Browser preview attempted via supported host tool, report host limitations accurately.
-- [ ] Whole-branch independent review, reproduce/fix material findings, final verification and ledger. Commit implementation; do not merge/push without a new user request.
+- [x] Write frontend API/selection/confirmation tests RED; implement two new tabs, catalog/source edits, current task progress, cancel/resume, proof pagination, opportunity handoff, editable thesis draft/conditions and accept/reject review with history. Retain existing visual language and live-only evidence.
+- [x] Update API/README/AGENTS docs; source/catalog identities and current coverage visible, no demo conclusions. Tests GREEN, root typecheck, app tests and production build.
+- [x] Prepare a curated pending seed catalog with official source metadata; actual free-source gate:5 verified companies,3 with locatable AI application正文,2 themes. Reuse existing data before explicit bounded refresh. Record real limitations if source gate fails rather than certify fixture coverage.
+- [x] Actual local HTTP/SQLite/Pi workflow: scan→company→confirmthesis→new evidence/review→accept/reject, cancel/restart/explicitresume, historical versions; live model call limited and documented. Browser preview attempted via supported host tool, report host limitations accurately.
+- [x] Whole-branch independent review, reproduce/fix material findings, final verification and ledger. Commit implementation; do not merge/push without a new user request.
 
 ## Self-review
 

@@ -4,7 +4,7 @@ import type {DiscoveryDocument,DocumentSection,SectionKind,EvidenceChunk} from '
 
 type AnyNode=ReturnType<typeof parseDocument>['children'][number];
 type DocumentInput=Pick<DiscoveryDocument,'id'|'symbol'|'cik'|'sourceKind'|'url'>&Partial<Pick<DiscoveryDocument,'title'|'form'|'accession'|'period'|'publishedAt'|'fetchedAt'>>&{html:string};
-const MAX_HTML=2*1024*1024,MAX_TEXT=500000,CHUNK_SIZE=1800;
+const MAX_HTML=16*1024*1024,MAX_TEXT=500000,CHUNK_SIZE=1800;
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const blocks=new Set(['address','article','aside','blockquote','br','caption','dd','div','dl','dt','h1','h2','h3','h4','h5','h6','hr','li','main','ol','p','pre','section','table','td','th','tr','ul']);
 const skipped=new Set(['script','style','noscript','template','nav','header','footer','head','svg','canvas','iframe','object','ix:hidden']);

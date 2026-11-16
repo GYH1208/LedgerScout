@@ -8,7 +8,7 @@ import {DatabaseSync} from 'node:sqlite';
 import type {DiscoveryDocument,DiscoveryJob,DiscoveryMember,FrozenCompany,ReviewProposal,ThesisInput} from '../../equity-data/src/discovery-types.js';
 import {DiscoveryStore} from '../src/discovery-store.js';
 import {buildDocument,retrieveChunks} from '../../equity-data/src/documents.js';
-import {runDiscoveryTask} from '../src/discovery-runtime.js';
+import {runDiscoveryTask,DiscoveryBudget,validateCitations} from '../src/discovery-runtime.js';
 
 const member:DiscoveryMember={symbol:'MSFT',themes:['workflow'],sources:[],verification:'pending'};
 const thesis=():ThesisInput=>({title:'Workflow',statement:'Paid usage improves cash flow.',theme:'workflow',symbols:['MSFT'],sourceJobId:'dj_source',support:[],opposing:[],gaps:['AI revenue unknown'],conditions:[],invalidation:'Adoption stalls',nextCheck:'2027-02-28',horizonMonths:12});
@@ -153,7 +153,7 @@ test('real offline Pi runs settle persisted model reservations and cancelled wor
   const claim={text:'Company describes AI workflow adoption.',kind:'issuer-claim',scope:'ai-product',citations:[{chunkId:parsed.chunks[0]!.id,quote:parsed.text}]};
   let request=0;const reply=async()=>({content:JSON.stringify(++request%2?{claims:[claim],opposing:[],gaps:[]}:{opportunities:[]}),usage:{inputTokens:10,outputTokens:5,totalTokens:15}});
   const success=await runDiscoveryTask({job:base,documents:symbols=>store.documents(symbols),save:current=>store.saveJob(current),request:reply});
-  assert.equal(success.status,'completed');assert.equal(store.job(base.id)!.tokenUsage.totalTokens,30);assert.equal(store.job(base.id)!.reservedMs,0);assert.equal(store.job(base.id)!.tokenUsage.unknownRequests,0);
+  assert.equal(success.status,'partial');assert.ok(success.gaps.some(g=>g.includes('Reliable body sections')));assert.equal(store.job(base.id)!.tokenUsage.totalTokens,30);assert.equal(store.job(base.id)!.reservedMs,0);assert.equal(store.job(base.id)!.tokenUsage.unknownRequests,0);
   const controller=new AbortController(),cancelledJob={...job('dj_cancelled'),input:base.input};store.saveJob(cancelledJob);
   const cancelled=await runDiscoveryTask({job:cancelledJob,documents:symbols=>store.documents(symbols),save:current=>store.saveJob(current),signal:controller.signal,request:async()=>{controller.abort();throw Error('cancelled');}});
   assert.equal(store.job(cancelled.id)!.status,'cancelled');assert.equal(cancelled.reservedMs,35000);
@@ -161,3 +161,15 @@ test('real offline Pi runs settle persisted model reservations and cancelled wor
   const resumed=await runDiscoveryTask({job:child,documents:symbols=>store.documents(symbols),save:current=>store.saveJob(current),request:reply});
   assert.equal(resumed.counts.modelRequests,3);assert.equal(resumed.tokenUsage.unknownRequests,1);assert.ok(resumed.counts.elapsedMs>=35000);assert.equal(store.job(cancelled.id)!.resumedBy,child.id);
 }));
+
+
+test('in-flight HTTP time is durably reserved before dispatch and survives restart recovery',()=>fixture(async(store,dir)=>{
+  const running=job('dj_http');store.saveJob(running);const budget=new DiscoveryBudget(running,()=>store.saveJob(running));
+  await budget.http(17000);budget.close();assert.equal(store.job(running.id)!.reservedMs,17000);
+  const restarted=new DiscoveryStore(dir);try{const parent=restarted.job(running.id)!;assert.equal(parent.status,'interrupted');const child={...parent,id:'dj_http_resume',resumeOf:parent.id,status:'loading' as const,counts:{...parent.counts,elapsedMs:parent.counts.elapsedMs+parent.reservedMs},reservedMs:0};restarted.claimResume(parent.id,child);assert.ok(restarted.job(child.id)!.counts.elapsedMs>=17000);}finally{restarted.close();}
+}));
+
+test('whitespace-tolerant citation validation stores the canonical original excerpt',()=>{
+ const parsed=buildDocument({id:'d_whitespace',symbol:'MSFT',cik:'0000789019',sourceKind:'issuer',url:'https://www.microsoft.com/product',html:'<p>AI paid adoption remains early.</p>'});const c=parsed.chunks[0]!;
+ const values=validateCitations([{chunkId:c.id,quote:'AI  paid adoption remains early.'}],new Map([[c.id,c]]));assert.equal(values[0]!.quote,c.text);
+});
