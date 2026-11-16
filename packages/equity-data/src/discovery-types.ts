@@ -8,7 +8,7 @@ export type DiscoveryUniverse={version:number;createdAt:string;members:Discovery
 export type SectionKind='business'|'mda'|'risk'|'financial'|'other';
 export type DocumentSection={id:string;title:string;kind:SectionKind;start:number;end:number;confidence:'heading'|'fallback'};
 export type EvidenceChunk={id:string;documentId:string;symbol:string;cik:string;sectionId:string;kind:SectionKind;text:string;start:number;end:number;hash:string};
-export type DiscoveryDocument={id:string;symbol:string;cik:string;sourceKind:'sec'|'issuer';url:string;title:string;form?:string;accession?:string;period?:string;publishedAt?:string;fetchedAt:string;hash:string;text:string;sections:DocumentSection[];chunks:EvidenceChunk[];warnings:string[]};
+export type DiscoveryDocument={id:string;symbol:string;cik:string;sourceKind:'sec'|'issuer';rawEvidenceId?:string;url:string;title:string;form?:string;accession?:string;period?:string;publishedAt?:string;fetchedAt:string;hash:string;text:string;sections:DocumentSection[];chunks:EvidenceChunk[];warnings:string[]};
 export type EvidenceCitation={chunkId:string;quote:string};
 export type ResearchClaim={text:string;kind:'issuer-claim'|'analysis';scope:'company'|'segment'|'ai-product'|'unknown';citations:EvidenceCitation[]};
 export type CompanyExtraction={symbol:string;themes:ThemeKey[];claims:ResearchClaim[];opposing:ResearchClaim[];gaps:string[]};
@@ -19,12 +19,12 @@ export type SourceCheck={symbol:string;sourceId:string;url:string;status:'checke
 export type FrozenCompany={symbol:string;snapshotId:string;snapshot:CompanySnapshot;documentIds:string[]};
 export type DiscoveryInput={universeVersion:number;members:DiscoveryMember[];companies:FrozenCompany[];question:string;thesisId?:string;thesisVersion?:number;previousCompanies?:FrozenCompany[]};
 export type DiscoveryJob={id:string;kind:'refresh'|'scan'|'review';createdAt:string;status:'loading'|'completed'|'partial'|'failed'|'cancelled'|'interrupted'|'exhausted';symbols:string[];completed:string[];remaining:string[];errors:{symbol:string;code:string}[];counts:DiscoveryCounts;tokenUsage:DiscoveryUsage;input:DiscoveryInput;extractions:CompanyExtraction[];opportunities:Opportunity[];checks:SourceCheck[];gaps:string[];reservedMs:number;resumeOf?:string;resumedBy?:string;proposalId?:string;error?:string;resumable?:boolean};
-export type ThesisCondition={id:string;kind:'metric'|'manual';description:string;field?:string;op?:'gt'|'gte'|'lt'|'lte';value?:number;period?:string};
+export type ThesisCondition={id:string;kind:'metric'|'manual';description:string;symbol?:string;field?:string;op?:'gt'|'gte'|'lt'|'lte';value?:number;period?:string};
 export type ThesisInput={id?:string;title:string;statement:string;theme:ThemeKey;symbols:string[];sourceJobId:string;opportunityId?:string;support:EvidenceCitation[];opposing:EvidenceCitation[];gaps:string[];conditions:ThesisCondition[];invalidation:string;nextCheck:string;horizonMonths:12|24;gapResolutionReason?:string};
 export type ThesisVersion=ThesisInput&{id:string;version:number;createdAt:string;confirmed:true;companies:FrozenCompany[]};
 export type MetricChange={symbol:string;field:string;kind:'new-period'|'restatement'|'missing'|'unchanged'|'not-comparable';previous:MetricValue|null;next:MetricValue|null;delta:number|null};
 export type ConditionResult={id:string;status:'met'|'not-met'|'unknown'|'manual';reason:string};
-export type ReviewProposal={id:string;jobId:string;thesisId:string;thesisVersion:number;createdAt:string;status:'pending'|'accepted'|'rejected';impact:'strengthened'|'weakened'|'mixed'|'unchanged'|'insufficient';explanation:string;citations:EvidenceCitation[];changes:MetricChange[];conditionResults:ConditionResult[];draft:ThesisInput;companies:FrozenCompany[];newDocumentIds:string[]};
+export type ReviewProposal={id:string;jobId:string;thesisId:string;thesisVersion:number;createdAt:string;status:'pending'|'accepted'|'rejected';impact:'strengthened'|'weakened'|'mixed'|'unchanged'|'insufficient';explanation:string;citations:EvidenceCitation[];changes:MetricChange[];conditionResults:ConditionResult[];draft:ThesisInput;companies:FrozenCompany[];newDocumentIds:string[];resolvedThesisVersion?:number};
 
 /** Browser edits cannot grant source or security verification. */
 export function validateUniverse(value:unknown):DiscoveryMember[]{

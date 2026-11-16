@@ -9,3 +9,7 @@
 
 - Baseline result:380 total,373pass/5fail/2skip; four existing WindowsEPERM setups plus existing optional local-tokenizer worker timing failure. Full log %TEMP%/ledgerscout-ai-baseline.log. No discovery code existed at baseline.
 - Task1: contracts RED→GREEN (1/1); source and security verification cannot be supplied by browser edits. htmlparser2 pinned12.0.0 from npm registry for nonexecuting HTML parse.
+
+- Task2: document+officialsource tests RED→GREEN, exactchunks/TOC/bodyafter30k/DNSpinning/redirect/cancel/429 rules. Rootmoduleverificationcombined37/37pass.
+- Task3: separateSQLite+immutablefiles+versions+conditions+atomicresume+idempotentdecisions implemented; actual offlinePi integration handlesmodelreservation/unknownusage settlement. Rootcombined37/37pass.
+- Task4/5 inprogress: rootservice/runtime wired, sourcehelper implementedindependently, offline scan→handoff→confirmedthesis→newperiod/restatement→acceptedreview flow passes. Ruling: retain both original andnew document IDs forreview; newlyconfirmed financialsnapshot doesnotinvalidate old supportingcitations.
