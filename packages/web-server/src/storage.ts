@@ -20,7 +20,12 @@ export class WebStore {
     try {
       this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=2500');
       const version = this.db.prepare('PRAGMA user_version').get()!.user_version;
-      if (version !== 0 && version !== 1 && version !== 2) throw Error('Unsupported Web database schema');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw Error('Unsupported Web database schema');
+      if (version !== 0) {
+        const owner = this.db.prepare("SELECT value FROM meta WHERE key='owner'").get();
+        if (owner) { const previous=JSON.parse(String(owner.value)); if(!Number.isSafeInteger(previous.pid)||previous.pid<1||alive(previous.pid))throw Error('Web database already has an active owner'); }
+        if(version<3)this.db.exec(`VACUUM INTO '${`${path.replace(/[^\\/]+$/, '')}web-before-v3-${randomUUID()}.sqlite`.replaceAll("'","''")}'`);
+      }
       if (version === 0) {
         if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").get()) throw Error('Unknown Web database schema');
         this.transaction(() => this.db.exec(`
@@ -43,6 +48,9 @@ export class WebStore {
       }
       if (this.db.prepare('PRAGMA user_version').get()!.user_version === 1) this.transaction(() => {
         this.db.exec("ALTER TABLE evidence_refs ADD COLUMN hash TEXT NOT NULL DEFAULT ''; PRAGMA user_version=2");
+      });
+      if (this.db.prepare('PRAGMA user_version').get()!.user_version === 2) this.transaction(() => {
+        this.db.exec("ALTER TABLE sessions ADD COLUMN research_domain TEXT NOT NULL DEFAULT 'ethereum' CHECK(research_domain='ethereum'); PRAGMA user_version=3");
       });
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL');
       this.transaction(() => {
@@ -72,7 +80,7 @@ export class WebStore {
     if (!validId(sessionId, 's') || value.resumeOf && !validId(value.resumeOf, 'r')) throw Error('Invalid identity');
     return this.transaction(() => {
       if (value.sessionId && !this.hasSession(sessionId)) throw Error('Unknown session');
-      if (!value.sessionId) this.db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(sessionId, value.title, value.date);
+      if (!value.sessionId) this.db.prepare('INSERT INTO sessions(id,title,date) VALUES(?,?,?)').run(sessionId, value.title, value.date);
       const now = new Date().toISOString();
       this.db.prepare("INSERT INTO jobs(id,session_id,question,status,resume_of,created_at,updated_at) VALUES(?,?,?,'loading',?,?,?)").run(jobId, sessionId, value.question, value.resumeOf ?? null, now, now);
       return { sessionId, jobId };
@@ -111,7 +119,7 @@ export class WebStore {
     const rows = this.db.prepare('SELECT s.*,MAX(j.created_at) AS latest,MAX(j.seq) AS tie FROM sessions s JOIN jobs j ON j.session_id=s.id GROUP BY s.id ORDER BY latest DESC,tie DESC LIMIT 31').all();
     return { hasMoreSessions: rows.length > 30, sessions: rows.slice(0,30).map(row => {
       const jobs = this.db.prepare('SELECT * FROM jobs WHERE session_id=? ORDER BY created_at DESC,seq DESC LIMIT 21').all(String(row.id));
-      return { id: String(row.id), title: String(row.title), date: String(row.date), hasMoreTurns: jobs.length > 20, turns: jobs.slice(0,20).reverse().map(row => this.row(row)) };
+      return { id: String(row.id), researchDomain: 'ethereum' as const, title: String(row.title), date: String(row.date), hasMoreTurns: jobs.length > 20, turns: jobs.slice(0,20).reverse().map(row => this.row(row)) };
     }) };
   }
   hasImported() { return Boolean(this.db.prepare("SELECT value FROM meta WHERE key='imported'").get()); }
@@ -120,7 +128,7 @@ export class WebStore {
   importResult(result: RunResult, question: string, date: string, createdAt = `${date}T00:00:00.000Z`) {
     if (this.findRun(result.sessionId, result.runId)) return;
     this.transaction(() => {
-      this.db.prepare('INSERT OR IGNORE INTO sessions VALUES(?,?,?)').run(result.sessionId, question.slice(0,100), date);
+      this.db.prepare('INSERT OR IGNORE INTO sessions(id,title,date) VALUES(?,?,?)').run(result.sessionId, question.slice(0,100), date);
       const id = `j_history_${result.runId.slice(2)}`, now = createdAt;
       this.db.prepare("INSERT INTO jobs(id,session_id,question,status,created_at,updated_at) VALUES(?,?,?,'interrupted',?,?)").run(id, result.sessionId, question, now, now);
       // Finish uses its own transaction, so insert projected fields here as one import transaction.

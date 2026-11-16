@@ -5,6 +5,7 @@ import { redact } from '@ledgerscout/chain-data';
 import { WebStore } from './storage.js';
 import { publicQuery, validId } from './views.js';
 import { initializeHistory, loadEvidence, recovery } from './history.js';
+import { createEquityService, EquityHttpError, type EquityServiceOptions } from './equity-service.js';
 
 type Config = ReturnType<typeof loadRuntimeConfig>;
 class HttpError extends Error { constructor(readonly status: number, message: string) {super(message);} }
@@ -16,9 +17,10 @@ async function readBody(req: IncomingMessage) {
 }
 function send(res:ServerResponse,status:number,value:unknown) {res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(JSON.stringify(value));}
 
-export function createWebServer(options: {config?:()=>Config;run?:typeof runAgent}={}) {
+export function createWebServer(options: {config?:()=>Config;run?:typeof runAgent;equity?:Omit<EquityServiceOptions,'directory'>}={}) {
   const load=options.config??loadRuntimeConfig;
   let store:WebStore|undefined,base='',initError='',initialized=false,allowWrites=true;
+  let equity:ReturnType<typeof createEquityService>|undefined,equityError='';
   let active:{id:string;controller:AbortController;task?:Promise<void>}|undefined;
   let resolveReady:(v:boolean)=>void=()=>{},resolveShutdown:()=>void=()=>{};
   const ready=new Promise<boolean>(resolve=>resolveReady=resolve),shutdown=new Promise<void>(resolve=>resolveShutdown=resolve);
@@ -29,13 +31,15 @@ export function createWebServer(options: {config?:()=>Config;run?:typeof runAgen
     catch{return{ready:false,configured:{deepseek:false,alchemy:false,etherscan:false},model:'deepseek-flash',error:'本地配置无法读取，请检查 .env 格式。'};}
   };
   const server=createServer((req,res)=>{void handle(req,res).catch(error=>{
-    if(!res.headersSent)send(res,error instanceof HttpError?error.status:500,{error:error instanceof HttpError?error.message:'本地记录读取或保存失败，请检查存储目录与服务日志后重试。'});
+    if(!res.headersSent)send(res,error instanceof HttpError||error instanceof EquityHttpError?error.status:500,{error:error instanceof HttpError||error instanceof EquityHttpError?error.message:'本地记录读取或保存失败，请检查存储目录与服务日志后重试。'});
     else res.end();
   });});
   // Bind first: EADDRINUSE must never mutate the existing service's jobs.
   // The SQLite owner lease additionally guards another listener/port.
   server.once('listening',()=>{void(async()=>{
-    try {base=load().outputDirectory;store=new WebStore(join(base,'web.sqlite'));await initializeHistory(base,store,secrets());initialized=true;resolveReady(true);}
+    try {base=load().outputDirectory;store=new WebStore(join(base,'web.sqlite'));await initializeHistory(base,store,secrets());
+      try{equity=createEquityService({directory:base,modelConfig:load,...options.equity});}catch{equityError='美股缓存或额度记录无法打开；请保留本地数据并检查存储目录。';}
+      initialized=true;resolveReady(true);}
     catch {initError='本地会话数据库无法打开或已被其他服务占用。请保留原数据，检查目录权限、数据库与重复服务后重启。';store?.close();store=undefined;resolveReady(false);}
   })();});
   server.once('error',()=>resolveReady(false));
@@ -43,7 +47,7 @@ export function createWebServer(options: {config?:()=>Config;run?:typeof runAgen
     active?.controller.abort(new Error('Server closed'));
     let timer:ReturnType<typeof setTimeout>|undefined;
     try {await Promise.race([active?.task??Promise.resolve(),new Promise<void>(r=>{timer=setTimeout(r,6500);})]);}
-    finally {if(timer)clearTimeout(timer);allowWrites=false;store?.close();resolveShutdown();}
+    finally {if(timer)clearTimeout(timer);await equity?.close();allowWrites=false;store?.close();resolveShutdown();}
   })();});
 
   async function handle(req:IncomingMessage,res:ServerResponse) {
@@ -52,6 +56,14 @@ export function createWebServer(options: {config?:()=>Config;run?:typeof runAgen
     if(req.method==='POST'&&(req.headers['x-ledgerscout-client']!=='web'||!/^application\/json(?:;|$)/.test(req.headers['content-type']??'')))throw new HttpError(403,'缺少本地客户端请求标记');
     if(!initialized||!store||initError)throw new HttpError(503,initError||'本地历史记录正在准备，请稍后重试。');
     const db=store,url=new URL(req.url??'/','http://127.0.0.1');
+    if(url.pathname.startsWith('/api/equity/')){
+      if(!equity||equityError)throw new HttpError(503,equityError||'美股服务尚未就绪');
+      const path=url.pathname.slice('/api/equity'.length);
+      const body=req.method==='POST'?await readBody(req):{};
+      if(active&&req.method==='POST'&&['/research','/refresh','/resume'].includes(path))throw new HttpError(409,'已有链上研究正在执行，请等待或取消后重试');
+      const result=await equity.route(req.method??'GET',path,body,url.searchParams);
+      return send(res,result.status,result.value);
+    }
     if(req.method==='GET'&&url.pathname==='/api/state') {
       // Keep the running flag consistent with the SQL snapshot while asynchronous
       // checkpoint reads run. A task may finish before this response is sent.
@@ -75,7 +87,7 @@ export function createWebServer(options: {config?:()=>Config;run?:typeof runAgen
         const source=db.findRun(String(sessionId),String(resumeRunId));if(!source)throw new HttpError(404,'未找到此会话的源运行');
         if(!await recovery(base,source))throw new HttpError(409,'源运行不可恢复、证据校验失败或已被恢复');
       }
-      if(active)throw new HttpError(409,'已有查询正在执行，请等待或取消后再试');
+      if(active||equity?.busy)throw new HttpError(409,'已有查询正在执行，请等待或取消后再试');
       if(!configuration().ready)throw new HttpError(503,'请先在本地 .env 配置 DeepSeek、Alchemy 和 Etherscan 密钥');
       const config=load(),secretValues=[config.key,config.chain.alchemyKey,config.chain.etherscanKey].filter(Boolean);
       const safe=(text:string)=>String(redact(text,secretValues));
