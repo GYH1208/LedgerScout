@@ -1,8 +1,32 @@
 # LedgerScout
 
-只读的 Ethereum Mainnet 研究助手。首版使用 Pi Agent Core 执行工具循环，DeepSeek 选择工具并组织解释；精确余额、普通交易和双向 ETH/ERC20 转账来自 Alchemy 与 Etherscan。
+只读的 Ethereum Mainnet 与美股研究助手。使用 Pi Agent Core 执行工具循环，DeepSeek 选择工具并组织解释；链上数据来自 Alchemy 与 Etherscan，美股数据适配 SEC、FMP 与 Twelve Data 免费接口。
 
-已经提供命令行、多轮本地会话、证据引用、部分历史提示、日期窗口查询、地址资金流分析、ENS名称解析、指定合约的ERC20余额、运行预算、超时、取消及显式恢复。股票、跨资产研究和后台自动恢复执行尚未实现。
+已经提供链上命令行、多轮本地会话、证据引用、日期窗口查询、地址资金流分析、ENS名称解析、指定合约的ERC20余额、运行预算、超时、取消及显式恢复。美股工作台已接入市场、股票池筛选与单股研究；真实账户已验证13只ETF与5只测试个股；完整研究验收进度见 docs/superpowers/plans/2026-11-16-us-equity-research-progress.md。跨资产组合和后台自动恢复执行不在本版范围内。
+
+## 美股工作台
+
+运行 `npm run ui:live` 后打开 `http://127.0.0.1:4173/?mode=live&domain=us-equity`，或从链上侧栏进入“美股研究”。沿用白灰蓝会话与证据布局，原链上研究入口保留。
+
+在根目录 `.env` 本地填写 `FMP_API_KEY`、`TWELVE_DATA_API_KEY`、真实的 `SEC_USER_AGENT`（应用名和联系邮箱）及已有 `DEEPSEEK_API_KEY`。SEC 不需要 API Key。不要把密钥发到聊天或提交到 Git。`npm run equity:config` 只检查配置存在性，不请求模型或数据供应商；已配置不代表免费权限已经验证。配置缺失时保留空状态和已有缓存，不使用演示行情。
+
+- 市场：SPY、QQQ 与11个行业ETF代理；只有显式更新访问供应商。1/5/21/63交易日价格涨跌与相对SPY比较须有共同日期和确认的拆股复权口径，不等于含分红总回报。ETF 使用 Twelve Data `time_series`，明确请求 `adjust=splits`，保守截止纽约前一自然日，避免当天未收盘日线；首次13只更新约100秒。FMP 个股价格的复权状态仍为 unknown，个股价格收益筛选保留缺口。
+- 筛选：本机可配置最多10只股票；空数据库初始为空；本机已有验证的 AAPL、MSFT、GOOGL、AMZN、META 测试池，数据以界面实际缓存为准。每批显式更新最多5只，读取和筛选缓存不调用模型。收入增速、利润率、现金流、估值与趋势字段缺失/过期时明确排除，不按零处理。保存股票池不会自动取数。
+- 研究：支持池外单只股票，核验代码、交易所、CIK、美元币种及普通股标识；年度最多3年、单季最多8季度。财务口径与数值由程序计算；模型解释需要有效的SEC披露引用。当前未验证价格与EPS的拆股/股本基础，市盈率明确不可计算。银行、保险及REIT不套用普通公司比较模板。
+- 历史：会话证券与领域固定，默认追问复用原快照、同行和已保存披露；刷新是明确操作。取消或重启后只提供校验通过的显式恢复，沿恢复链累计原预算，不自动重跑。
+
+免费能力验证命令（会实际请求供应商）：
+
+```sh
+npm run equity:verify -- --stage market
+npm run equity:verify -- --stage stocks --symbols AAPL,MSFT,GOOGL,AMZN,META
+```
+
+上述五只为已验证的可替换公开接口测试样本，不代表指数全样本或投资推荐。市场验证只请求 Twelve Data，个股验证保留 FMP＋SEC；不自动混用或切换供应商。验证保存脱敏原始响应、字段、历史长度、权限、日期与复权状态；不能单凭少数成功响应宣称首版验收完成。最终仍需确认13个市场代理、至少5只可配置股票及可比日期的真实免费覆盖。
+
+美股会话/池/缓存索引/检查点存入 `runtime-results/equity.sqlite`，原始响应与不可变证据存入 `runtime-results/equity/evidence/`；FMP配额存入 `runtime-results/equity-quota.sqlite`。设置 `EQUITY_OUTPUT_DIRECTORY` 时，两家供应商的CLI/UI额度账本统一移至该目录。每次FMP尝试在请求前事务预留，失败/重试也计数，默认最多200次/UTC日；Twelve Data 使用独立 `runtime-results/twelve-data-quota.sqlite`，默认本应用600次/UTC日（可配置1–800），每次尝试至少间隔8秒，失败/重试计数，跨CLI/UI共享配置目录的账本。免费Basic官方额度为8次/分钟、800次/UTC日；其他客户端消耗仍以供应商为准。SEC在本进程共享每秒最多2次的调度。每次显式操作至多32个数据HTTP尝试、300秒；研究至多15次模型请求、12次工具调用，每次模型请求35秒。
+
+公司资料按需保留7天，已获取财务快照按需24小时校验；浏览与重启不自动刷新。失败保留旧快照并显示缺口，剩余股票需再次明确选择更新。旧Web数据库迁移会先生成一致的 `web-before-v3-*.sqlite` 备份，并将既有会话标为ethereum；不改写旧链上证据/恢复预算。备份仍须整体保留 `runtime-results/`。
 
 ## Web 界面原型
 

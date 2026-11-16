@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit && npm run typecheck --workspace data-validation",
     "agent": "tsx packages/agent-runtime/src/cli.ts",
     "agent:config": "tsx packages/agent-runtime/src/cli.ts --config",
+    "equity:config": "tsx packages/equity-data/src/cli.ts --config",
+    "equity:verify": "tsx packages/equity-data/src/cli.ts",
     "ui:dev": "npm --prefix apps/research-prototype run dev --",
     "ui:live": "npm --prefix apps/research-prototype run dev:live --",
     "ui:api": "tsx packages/web-server/src/main.ts",

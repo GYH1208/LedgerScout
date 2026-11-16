@@ -1,0 +1,8 @@
+{
+  "name": "@ledgerscout/equity-data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./*": "./src/*.ts" },
+  "dependencies": { "@ledgerscout/chain-data": "0.1.0" }
+}

@@ -1,0 +1,16 @@
+export const MARKET_SYMBOLS = ['SPY','QQQ','XLC','XLY','XLP','XLE','XLF','XLV','XLI','XLB','XLRE','XLK','XLU'] as const;
+export type EquityDomain = 'us-equity';
+export type PriceBar = { date: string; close: number; volume?: number };
+export type PriceSeries = { symbol: string; bars: PriceBar[]; adjustment: 'split-adjusted' | 'unadjusted' | 'unknown'; source: string; fetchedAt: string };
+export type Security = { symbol: string; name: string; cik: string; exchange: string; currency: string; country: string; kind: 'common-stock' | 'etf' | 'unsupported'; sector?: string; industry?: string };
+export type SourceRef = { id: string; source: string; fetchedAt: string; hash: string };
+export type FinancialPoint = { metric: string; value: number; unit: string; start?: string; end: string; filed: string; accession: string; form: string; fiscalYear?: number; fiscalPeriod?: string; derivedFrom?: string[] };
+export type Financials = { annual: FinancialPoint[]; quarterly: FinancialPoint[]; warnings: string[]; industryExclusion?: string };
+export type MetricValue = { value: number | null; unit: string; definition: string; period: string; sourceRefs: string[]; reason?: string };
+export type Metrics = Record<string, MetricValue>;
+export type CompanySnapshot = { security: Security; prices?: PriceSeries; financials: Financials; metrics: Metrics; filings: Filing[]; sourceRefs: SourceRef[]; fetchedAt: string; warnings: string[] };
+export type Filing = { accession: string; form: string; filed: string; primaryDocument: string; url: string };
+export type MarketRow = { symbol: string; label: string; asOf: string | null; price: number | null; returns: Record<string, number | null>; relativeToSpy: Record<string, number | null>; reason?: string };
+export type MarketSnapshot = { fetchedAt: string; commonDate: string | null; rows: MarketRow[]; coverage: number; total: number; warnings: string[] };
+export type ScreenFilter = { field: string; op: 'gt' | 'gte' | 'lt' | 'lte'; value: number };
+export type ScreenResult = { filters: ScreenFilter[]; total: number; matches: { symbol: string; name: string; metrics: Metrics; snapshotId?: string }[]; excluded: { symbol: string; reason: string }[]; missing: number; asOf: string };

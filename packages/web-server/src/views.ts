@@ -17,7 +17,7 @@ export function publicQuery(q: QueryResult) {
   };
 }
 export function publicRun(r: RunResult) {
-  return { sessionId: r.sessionId, runId: r.runId, status: r.status, answer: r.answer,
+  return { researchDomain: 'ethereum' as const, sessionId: r.sessionId, runId: r.runId, status: r.status, answer: r.answer,
     counts: r.counts, tokenUsage: r.tokenUsage, resumable: Boolean(r.resumable), resumeOf: r.resumeOf,
     error: r.error, warnings: r.warnings, queries: r.queries.map(publicQuery), ensResolutions: r.ensResolutions };
 }

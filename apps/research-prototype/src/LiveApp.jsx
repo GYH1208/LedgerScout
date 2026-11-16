@@ -282,7 +282,7 @@ function LiveAnswer({ turn, open, resume, busy }) {
     </div>
   );
 }
-export function LiveApp() {
+export function LiveApp({ onEquity }) {
   const [state, setState] = useState({
       sessions: [],
       ready: false,
@@ -474,6 +474,7 @@ export function LiveApp() {
         LedgerScout
       </a>
       <p className="sidebar-caption">Ethereum Mainnet · 真实查询</p>
+      {onEquity && <button className="text-action" onClick={onEquity}>美股研究 →</button>}
       <button className="primary new-research" onClick={newResearch}>
         <Plus size={17} />
         新建研究
