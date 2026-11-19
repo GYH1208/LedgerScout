@@ -29,6 +29,85 @@ async function fixture(fn:(v:{store:DiscoveryStore;equity:EquityStore;config:Equ
  finally{store.close();equity.close();await rm(dir,{recursive:true,force:true});}
 }
 
+test('explicit refresh saves the verified fiscal quarter transcript as separate key-free evidence',()=>fixture(async({store,equity,config,members})=>{
+ const company=snapshot('AAA');
+ company.financials.quarterly=[{metric:'revenue',unit:'USD',value:100,start:'2026-07-01',end:'2026-09-30',filed:'2026-11-16',accession:'0000000001-26-000003',form:'10-Q',fiscalYear:2026,fiscalPeriod:'Q3'}];
+ await equity.saveCompany(company);
+ const job=newDiscoveryJob('refresh',{universeVersion:1,members,companies:[],question:''});
+ const secret='offline-alpha-key';
+ await refreshDiscoverySources({job,store,equity,config:{...config,alphaVantageKey:secret},save:()=>store.saveJob(job),fetch:async value=>{
+  const url=new URL(String(value));
+  if(url.hostname==='data.sec.gov')return Response.json(withQuarter('AAA'));
+  if(url.href===quarterUrl)return new Response(body);
+  if(url.hostname==='www.alphavantage.co'&&url.searchParams.get('quarter')==='2026Q3'&&url.searchParams.get('apikey')===secret)return Response.json({symbol:'AAA',quarter:'2026Q3',transcript:[{speaker:'Jane CEO',title:'CEO',content:'We reported paying AI customers during the quarter.'}]});
+  throw Error('Unexpected request');
+ }});
+ const doc=(await store.documents(['AAA'])).find(d=>d.sourceKind==='alpha-vantage');
+ assert.ok(doc?.rawEvidenceId,JSON.stringify(job.checks));
+ assert.equal(doc.period,'2026Q3');
+ assert.match(doc.chunks.map(c=>c.text).join(' '),/Jane CEO[\s\S]*paying AI customers/);
+ assert.match(doc.url,/quarter=2026Q3/);
+ assert.ok(!JSON.stringify({doc,job,raw:await equity.readEvidence(doc.rawEvidenceId)}).includes(secret));
+ assert.equal(job.counts.dataHttpRequests,3);
+ assert.deepEqual(job.checks.find(c=>c.sourceId==='alpha-vantage:2026Q3')?.documentIds,[doc.id]);
+}));
+
+test('an HTTP 200 with an empty transcript leaves a coverage gap without inventing evidence',()=>fixture(async({store,equity,config,members})=>{
+ const company=snapshot('AAA');
+ company.financials.quarterly=[{metric:'revenue',unit:'USD',value:100,start:'2026-07-01',end:'2026-09-30',filed:'2026-11-16',accession:'0000000001-26-000003',form:'10-Q',fiscalYear:2026,fiscalPeriod:'Q3'}];
+ await equity.saveCompany(company);
+ const job=newDiscoveryJob('refresh',{universeVersion:1,members,companies:[],question:''});
+ await refreshDiscoverySources({job,store,equity,config:{...config,alphaVantageKey:'offline-alpha-key'},save:()=>store.saveJob(job),fetch:async value=>{
+  const url=new URL(String(value));
+  if(url.hostname==='data.sec.gov')return Response.json(withQuarter('AAA'));
+  if(url.href===quarterUrl)return new Response(body);
+  if(url.hostname==='www.alphavantage.co')return Response.json({symbol:'AAA',quarter:'2026Q3',transcript:[]});
+  throw Error('Unexpected request');
+ }});
+ assert.equal(job.status,'partial');
+ assert.deepEqual(job.completed,['AAA']);
+ const check=job.checks.find(c=>c.sourceId==='alpha-vantage:2026Q3');
+ assert.equal(check?.status,'unavailable');
+ assert.deepEqual(check?.documentIds,[]);
+ assert.match(check?.reason??'',/空正文/);
+ assert.deepEqual((await store.documents(['AAA'])).map(d=>d.sourceKind),['sec']);
+}));
+
+function textPdf():Buffer{
+ const contents='BT /F1 12 Tf 35 70 Td (Official transcript: AI customer adoption.) Tj ET';
+ const objects=[
+  '<< /Type /Catalog /Pages 2 0 R >>',
+  '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+  '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 100] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+  '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  `<< /Length ${contents.length} >>\nstream\n${contents}\nendstream`
+ ];
+ let pdf='%PDF-1.4\n';
+ const offsets=objects.map((object,index)=>{const offset=pdf.length;pdf+=`${index+1} 0 obj\n${object}\nendobj\n`;return offset;});
+ const xref=pdf.length;
+ pdf+=`xref\n0 6\n0000000000 65535 f \n${offsets.map(offset=>`${String(offset).padStart(10,'0')} 00000 n \n`).join('')}trailer\n<< /Root 1 0 R /Size 6 >>\nstartxref\n${xref}\n%%EOF\n`;
+ return Buffer.from(pdf);
+}
+
+test('exact registered issuer PDF becomes citable text with the original bytes retained',()=>fixture(async({store,equity,config,members})=>{
+ const pdf=textPdf();
+ const job=newDiscoveryJob('refresh',{universeVersion:1,members,companies:[],question:''});
+ await refreshDiscoverySources({job,store,equity,config,save:()=>store.saveJob(job),fetch:async value=>{
+  const url=String(value);
+  if(url.includes('submissions'))return Response.json(submission('AAA'));
+  if(url===secUrl)return new Response(body);
+  if(url===members[0]!.sources[0]!.url)return new Response(new Uint8Array(pdf),{headers:{'Content-Type':'application/pdf'}});
+  throw Error('Unexpected request');
+ }});
+ const doc=(await store.documents(['AAA'])).find(d=>d.form==='PDF');
+ assert.ok(doc?.rawEvidenceId,JSON.stringify(job.checks));
+ assert.equal(doc.sourceKind,'issuer');
+ assert.match(doc.chunks.map(c=>c.text).join(' '),/Official transcript: AI customer adoption\./);
+ const raw=await equity.readEvidence(doc.rawEvidenceId);
+ assert.deepEqual(Buffer.from(raw.data.body,'base64'),pdf);
+ assert.equal(job.counts.dataHttpRequests,3);
+},[{...official(),id:'transcript',kind:'pdf',url:'https://investor.issuer.example.com/products/call.pdf'}]));
+
 test('fresh company/profile caches still check current submissions and retain SEC body beyond TOC and 30k',()=>fixture(async({store,equity,config,members})=>{
  const seen:string[]=[];const job=newDiscoveryJob('refresh',{universeVersion:1,members,companies:[],question:''});store.saveJob(job);
  await refreshDiscoverySources({job,store,equity,config,save:()=>store.saveJob(job),fetch:async url=>{seen.push(String(url));if(String(url).includes('submissions'))return Response.json(submission('AAA'));if(String(url)===secUrl)return new Response(body);throw Error('Unexpected network endpoint');}});

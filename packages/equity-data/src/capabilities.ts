@@ -40,7 +40,7 @@ export function inspectCapability(endpoint:string,symbol:string,body:unknown,err
   } catch(caught){result.code=safeEquityCode(caught);return result;}
 }
 export function assessCoverage(rows:Capability[]) {
-  const prices=rows.filter(r=>['historical-price-eod/light','time_series'].includes(r.endpoint)&&r.status==='available'&&r.historyLength>=1);
+  const prices=rows.filter(r=>['historical-price-eod/light','time_series','stock_time_series'].includes(r.endpoint)&&r.status==='available'&&r.historyLength>=1);
   const marketCovered=new Set(prices.filter(r=>(MARKET_SYMBOLS as readonly string[]).includes(r.symbol)).map(r=>r.symbol)).size;
   const stockCovered=new Set(prices.filter(r=>r.identityVerified&&!(MARKET_SYMBOLS as readonly string[]).includes(r.symbol)).map(r=>r.symbol)).size;
   // A single stage never proves common trading-date, identity and adjustment coverage.

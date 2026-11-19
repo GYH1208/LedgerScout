@@ -34,3 +34,17 @@ test('price filters reject stale price cache even when financial snapshot was re
  const result=screenCompanies([c],[{field:'priceReturn21',op:'gt',value:0}],{now:'2025-04-01T12:00:00Z'});
  assert.equal(result.matches.length,0);assert.equal(result.missing,1);
 });
+
+test('stock price comparisons use the same session edges and do not fill a missing close',()=>{
+ const a=company('A',1),b=company('B',1),c=company('C',1);
+ for(const [entry,bars] of [
+  [a,[['2025-03-27',100],['2025-03-28',110],['2025-03-31',121]]],
+  [b,[['2025-03-27',50],['2025-03-28',55]]],
+  [c,[['2025-03-26',20],['2025-03-28',30]]],
+ ] as [CompanySnapshot,[string,number][]][]){
+  entry.prices={symbol:entry.security.symbol,adjustment:'split-adjusted',source:'twelve-data:stock_time_series:adjust=splits',fetchedAt:'2025-04-01T00:00:00Z',bars:bars.map(([date,close])=>({date,close}))};
+ }
+ const result=screenCompanies([a,b,c],[],{sortBy:'return1d',now:'2025-04-01T12:00:00Z'});
+ assert.deepEqual(result.matches.map(m=>[m.symbol,m.metrics.return1d!.period,m.metrics.return1d!.value]),[['A','2025-03-27/2025-03-28',10],['B','2025-03-27/2025-03-28',10]]);
+ assert.deepEqual(result.excluded.map(m=>m.symbol),['C']);
+});

@@ -5,13 +5,13 @@ import { loadRuntimeConfig,createDeepSeekRequest,type RequestModel } from '@ledg
 import { loadEquityConfig,type EquityConfig } from '../../equity-data/src/config.js';
 import { DailyQuota } from '../../equity-data/src/quota.js';
 import { TwelveDataQuota } from '../../equity-data/src/twelve-quota.js';
-import { TwelveDataProvider,TWELVE_PRICE_SOURCE } from '../../equity-data/src/twelve-data.js';
-import { EquityTransport,safeEquityCode } from '../../equity-data/src/transport.js';
+import { currentNewYorkDate,TwelveDataProvider,TWELVE_PRICE_SOURCE,TWELVE_STOCK_PRICE_SOURCE } from '../../equity-data/src/twelve-data.js';
+import { EquityDataError,EquityTransport,safeEquityCode } from '../../equity-data/src/transport.js';
 import { EquityProvider } from '../../equity-data/src/provider.js';
 import { normalizeFinancials } from '../../equity-data/src/financials.js';
-import { deriveMetrics,buildMarketSnapshot } from '../../equity-data/src/metrics.js';
+import { deriveMetrics,derivePriceReturns,buildMarketSnapshot } from '../../equity-data/src/metrics.js';
 import { screenCompanies,validateFilters } from '../../equity-data/src/screening.js';
-import { MARKET_SYMBOLS,type CompanySnapshot,type SourceRef,type Filing } from '../../equity-data/src/types.js';
+import { MARKET_SYMBOLS,type CompanySnapshot,type PriceSeries,type SourceRef,type Filing } from '../../equity-data/src/types.js';
 import { EquityStore,validSymbol,type EquityJob,type EquityCheckpoint } from './equity-store.js';
 import { runEquityResearch } from './equity-runtime.js';
 import { createDiscoveryService,DiscoveryHttpError } from './discovery-service.js';
@@ -23,6 +23,8 @@ type RouteResult={status:number;value:unknown};
 function fail(status:number,message:string):never{throw new EquityHttpError(status,message);}
 const only=(body:Record<string,unknown>,keys:string[])=>{if(Object.keys(body).some(k=>!keys.includes(k)))fail(400,'不支持的请求字段');};
 const fresh=(date:string,age:number)=>Number.isFinite(Date.parse(date))&&Date.now()-Date.parse(date)>=0&&Date.now()-Date.parse(date)<age;
+const verifiedStockPrice=(prices:PriceSeries|undefined,symbol:string)=>prices?.source===TWELVE_STOCK_PRICE_SOURCE&&prices.symbol===symbol&&prices.adjustment==='split-adjusted'&&prices.bars.length>0;
+const stockPriceWarning='twelve-data-prices:';
 
 export function createEquityService(options:EquityServiceOptions){
   const store=new EquityStore(options.directory);
@@ -55,7 +57,7 @@ export function createEquityService(options:EquityServiceOptions){
   function transport(signal:AbortSignal,job:EquityJob|Record<string,unknown>,refs:SourceRef[],symbol:string){
     const c=config();let http=0;
     const began=performance.now(),previous='researchDomain' in job?(job as EquityJob).counts.elapsedMs:0;
-    return new EquityTransport(c,{...('kind' in job&&job.kind==='market'?{twelveQuota:getTwelveQuota()}:{quota:getQuota()}),fetch:options.fetch,signal,
+    return new EquityTransport(c,{...('kind' in job&&job.kind==='market'?{}:{quota:getQuota()}),...(c.twelveDataKey?{twelveQuota:getTwelveQuota()}:{}),fetch:options.fetch,signal,
       beforeRequest:async()=>{
         signal.throwIfAborted();
         if('researchDomain' in job){const j=job as EquityJob;if(j.counts.dataHttpRequests>=32||previous+performance.now()-began>=300_000)throw Error('HTTP_BUDGET');j.counts.dataHttpRequests++;j.counts.elapsedMs=Math.ceil(previous+performance.now()-began);store.finish(safe(j));}
@@ -79,9 +81,23 @@ export function createEquityService(options:EquityServiceOptions){
       financials.industryExclusion='unclassified';
       financials.warnings.push('证券行业分类尚未核验，不提供普通公司比率比较。');
     }
-    const snapshot:CompanySnapshot=safe({security:raw.security,...(raw.prices?{prices:raw.prices}:{}),financials,
-      metrics:deriveMetrics(raw.security,financials,raw.prices,refs.map(r=>r.id)),filings:raw.filings.slice(0,30),sourceRefs:[...refs],fetchedAt:new Date().toISOString(),warnings:raw.warnings});
+    const stocksUnavailable=raw.warnings.some(w=>w.startsWith(stockPriceWarning));
+    const old=stocksUnavailable?await store.company(symbol):undefined;
+    const cached=old&&old.security.cik===raw.security.cik&&old.security.exchange===raw.security.exchange&&verifiedStockPrice(old.prices,symbol)?old:undefined;
+    const prices=raw.prices??cached?.prices;
+    const retained=cached?.sourceRefs.filter(ref=>ref.source==='twelve-data:stock_time_series').at(-1);
+    const sourceRefs=retained?[...refs,retained]:[...refs];
+    const snapshot:CompanySnapshot=safe({security:raw.security,...(prices?{prices}:{}),financials,
+      metrics:deriveMetrics(raw.security,financials,prices,sourceRefs.map(r=>r.id)),filings:raw.filings.slice(0,30),sourceRefs,fetchedAt:new Date().toISOString(),warnings:cached?[...raw.warnings,'保留上一份拆股复权日线，请核对实际行情日期。']:raw.warnings});
     const id=await store.saveCompany(safe(snapshot));return{snapshot,id};
+  }
+  async function refreshCachedStockPrices(snapshot:CompanySnapshot,source:EquityProvider,refs:SourceRef[]){
+    const prices=await source.getStockPrices(snapshot.security);
+    const sourceRefs=[...snapshot.sourceRefs.filter(ref=>ref.source!=='twelve-data:stock_time_series'),...refs];
+    const returns=derivePriceReturns(prices,refs.map(ref=>ref.id));
+    const pe=deriveMetrics(snapshot.security,snapshot.financials,prices,sourceRefs.map(ref=>ref.id)).pe!;
+    const warnings=snapshot.warnings.filter(w=>!w.startsWith(stockPriceWarning)&&!w.startsWith('prices:')&&w!=='保留上一份拆股复权日线，请核对实际行情日期。');
+    await store.saveCompany(safe({...snapshot,prices,metrics:{...snapshot.metrics,...returns,pe},sourceRefs,warnings}));
   }
   async function readyToResume(sessionId:string,runId:string){
     const source=store.run(sessionId,runId),cp=store.loadCheckpoint(runId);
@@ -204,7 +220,8 @@ export function createEquityService(options:EquityServiceOptions){
       try{
         const companies=await store.companies(),filters=validateFilters(body.filters);
         if(body.sortBy!==undefined&&typeof body.sortBy!=='string'||body.descending!==undefined&&typeof body.descending!=='boolean')fail(400,'无效排序条件');
-        const result=screenCompanies(companies,filters,{sortBy:body.sortBy as string|undefined,descending:body.descending as boolean|undefined});
+        const benchmark=store.marketSeries().find(series=>series.symbol==='SPY'&&series.source===TWELVE_PRICE_SOURCE);
+        const result=screenCompanies(companies,filters,{sortBy:body.sortBy as string|undefined,descending:body.descending as boolean|undefined,benchmark});
         const missing=store.pool().symbols.filter(s=>!companies.some(c=>c.security.symbol===s));
         result.total=store.pool().symbols.length;result.missing+=missing.length;result.excluded.push(...missing.map(symbol=>({symbol,reason:'尚未取得并核验本机数据'})));
         for(const match of result.matches)match.snapshotId=store.companyRef(match.symbol);
@@ -228,7 +245,19 @@ export function createEquityService(options:EquityServiceOptions){
           if(signal.aborted)break;
           try{
             if(body.kind==='market'){const existing=series.get(symbol);if(!existing||!fresh(existing.fetchedAt,86_400_000))series.set(symbol,await marketApi.getMarket(symbol));}
-            else {const existing=await store.company(symbol);if(!existing||!fresh(existing.fetchedAt,86_400_000)){refs.length=0;await obtainCompany(symbol,api,refs);}}
+            else{
+              const existing=await store.company(symbol);
+              refs.length=0;
+              if(!existing||!fresh(existing.fetchedAt,86_400_000)){
+                const {snapshot}=await obtainCompany(symbol,api,refs);
+                const priceFailure=snapshot.warnings.find(w=>w.startsWith(stockPriceWarning));
+                if(priceFailure)throw new EquityDataError(priceFailure.slice(stockPriceWarning.length));
+              }else if(c.twelveData){
+                const prices=existing.prices;
+                const reusable=verifiedStockPrice(prices,symbol)&&fresh(prices!.fetchedAt,86_400_000)&&currentNewYorkDate(prices!.fetchedAt)===currentNewYorkDate();
+                if(!reusable)await refreshCachedStockPrices(existing,api,refs);
+              }
+            }
             completed.push(symbol);
           }catch(error){const code=safeEquityCode(error);errors.push({symbol,code});if(['RATE_LIMIT','QUOTA_EXHAUSTED','QUOTA_STORAGE','HTTP_BUDGET','STAGE_DEADLINE'].includes(code))break;}
           job.completed=[...completed];job.remaining=(symbols as string[]).filter(s=>!completed.includes(s));job.errors=[...errors];store.setRefreshJob(safe(job));

@@ -1,5 +1,6 @@
-import {randomUUID,createHash} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
+import {isDeepStrictEqual} from 'node:util';
 import {redact} from '@ledgerscout/chain-data';
 import {parseDocument} from 'htmlparser2';
 import {EquityTransport} from '../../equity-data/src/transport.js';
@@ -8,7 +9,9 @@ import {DailyQuota} from '../../equity-data/src/quota.js';
 import {normalizeFinancials} from '../../equity-data/src/financials.js';
 import {deriveMetrics} from '../../equity-data/src/metrics.js';
 import {buildDocument} from '../../equity-data/src/documents.js';
-import {validateOfficialSource,discoverOfficialLinks,readOfficialPage} from '../../equity-data/src/official-sources.js';
+import {validateOfficialSource,discoverOfficialLinks,readOfficialPage,readOfficialPdf} from '../../equity-data/src/official-sources.js';
+import {alphaTranscriptLines,alphaTranscriptUrl,salesforceTranscriptPeriod,textAsDocumentHtml,transcriptQuarters} from '../../equity-data/src/earnings-transcripts.js';
+import {extractOfficialPdfText} from '../../equity-data/src/pdf-text.js';
 import type {DiscoveryJob,DiscoveryMember,OfficialSource,DiscoveryDocument,SourceCheck} from '../../equity-data/src/discovery-types.js';
 import type {CompanySnapshot,SourceRef,Filing} from '../../equity-data/src/types.js';
 import type {EquityConfig} from '../../equity-data/src/config.js';
@@ -41,11 +44,13 @@ function publication(html:string):string|undefined{
 /** Explicit bounded acquisition only. No model calls, pool edits, implicit continuation or URL guessing. */
 export async function refreshDiscoverySources(options:DiscoveryAcquisitionOptions):Promise<void>{
  const {job,store,equity,config}=options;
- const safe=<T>(value:T)=>redact(value,[config.fmpKey,config.twelveDataKey??'',config.secUserAgent,...(options.secrets??[])].filter(Boolean)) as T;
+ const safe=<T>(value:T)=>redact(value,[config.fmpKey,config.twelveDataKey??'',config.alphaVantageKey??'',config.secUserAgent,...(options.secrets??[])].filter(Boolean)) as T;
  const budget=new DiscoveryBudget(job,options.save,options.signal);
  const updated=new Map<string,DiscoveryMember>();
  let quota:DailyQuota|undefined,transport:EquityTransport|undefined,activeSymbol='',refs:SourceRef[]=[],fatal:unknown;
  const rawFilings=new Map<string,SourceRef>();
+ const rawTranscripts=new Map<string,SourceRef>();
+ let alphaStopped:string|undefined;
  const hook=async()=>{try{await budget.http(Math.max(15000,config.timeoutMs));}catch(e){fatal=e;throw e;}};
  const assertActive=()=>{if(fatal)throw fatal;budget.check();};
  const add=(symbol:string,sourceId:string,url:string,status:SourceCheck['status'],documentIds:string[]=[],reason?:string)=>{
@@ -55,26 +60,32 @@ export async function refreshDiscoverySources(options:DiscoveryAcquisitionOption
  const officialRead=async(source:OfficialSource,url:string)=>{
   assertActive();try{return await readOfficialPage(source,url,{fetch:options.fetch,signal:budget.signal,beforeRequest:hook});}catch(e){assertActive();throw e;}finally{if(!budget.signal.aborted)await budget.settleHttp();}
  };
+ const officialPdf=async(source:OfficialSource)=>{
+  assertActive();try{return await readOfficialPdf(source,{fetch:options.fetch,signal:budget.signal,beforeRequest:hook});}catch(e){assertActive();throw e;}finally{if(!budget.signal.aborted)await budget.settleHttp();}
+ };
  async function recordOfficial(symbol:string,source:string,url:string,html:string,fetchedAt:string){
   return equity.evidence(symbol,source,safe({url,body:html,fetchedAt}));
  }
- async function ingest(member:DiscoveryMember,url:string,html:string,raw:SourceRef,previous:DiscoveryDocument[],extra:Partial<Pick<DiscoveryDocument,'form'|'accession'|'publishedAt'>>={}){
+ type DocumentDetails=Partial<Pick<DiscoveryDocument,'sourceKind'|'title'|'form'|'accession'|'period'|'publishedAt'|'fetchedAt'>>;
+ async function ingest(member:DiscoveryMember,url:string,html:string,raw:SourceRef,previous:DiscoveryDocument[],extra:DocumentDetails={},originalBody:unknown=safe(html),warnings:string[]=[]){
   assertActive();
-  const document=buildDocument({id:`d_${randomUUID()}`,symbol:member.symbol,cik:member.cik!,sourceKind:extra.accession?'sec':'issuer',url,html:safe(html),...extra,fetchedAt:new Date().toISOString()});
+  const document=buildDocument({id:`d_${randomUUID()}`,symbol:member.symbol,cik:member.cik!,sourceKind:extra.accession?'sec':'issuer',url,html:safe(html),fetchedAt:new Date().toISOString(),...extra});
+  document.warnings.push(...warnings);
   if(!document.text.trim()||!document.chunks.length)throw Error('NO_EXTRACTABLE_TEXT');
   const old=previous.find(d=>d.url===url&&d.hash===document.hash&&d.cik===member.cik);
   // Canonical text hashes alone cannot certify changes outside the indexed bound.
-  if(old&&old.rawEvidenceId){const original=await equity.readEvidence(old.rawEvidenceId);const originalBody=original.data.body;if(typeof originalBody==='string'&&createHash('sha256').update(originalBody).digest('hex')===createHash('sha256').update(safe(html)).digest('hex'))return{document:old,unchanged:true};}
+  if(old&&old.rawEvidenceId){const original=await equity.readEvidence(old.rawEvidenceId);if(isDeepStrictEqual(original.data.body,originalBody))return{document:old,unchanged:true};}
   document.rawEvidenceId=raw.id;await store.saveDocument(document);previous.unshift(document);return{document,unchanged:false};
  }
  try{
   if(job.kind!=='refresh'||job.input.members.length>5||!job.input.members.length||job.input.members.some(m=>!job.symbols.includes(m.symbol)))throw Error('INVALID_REFRESH_SCOPE');
   assertActive();quota=new DailyQuota(join(config.outputDirectory,'equity-quota.sqlite'),config.dailyLimit);
   transport=new EquityTransport(config,{fetch:options.fetch,signal:budget.signal,quota,beforeRequest:hook,record:async value=>{
-   const r=value as {provider?:string;endpoint?:string;symbol?:string;source?:string;body?:unknown};
+   const r=value as {provider?:string;endpoint?:string;symbol?:string;source?:string;body?:unknown;parameters?:{quarter?:string}};
    const symbol=r.symbol??activeSymbol,ref=await equity.evidence(symbol,`${r.provider??'provider'}:${r.endpoint??'response'}`,safe(value));refs.push(ref);
    if(r.provider==='fmp'&&r.endpoint==='profile'&&r.symbol&&r.body)equity.setProfileRef(r.symbol,ref);
    if(r.provider==='sec'&&r.endpoint==='filing'&&r.source&&typeof r.body==='string')rawFilings.set(`${symbol}|${r.source}`,ref);
+   if(r.provider==='alpha-vantage'&&r.parameters?.quarter&&r.body)rawTranscripts.set(`${symbol}|${r.parameters.quarter}`,ref);
    if(!budget.signal.aborted)await budget.settleHttp();
   }});
   const provider=new EquityProvider(transport,{profileCache:{get:async symbol=>{const ref=equity.profileRef(symbol);if(!ref||!fresh(ref.fetchedAt,7*86400000))return;const proof=await equity.readEvidence(ref.id);if(proof.symbol!==symbol)return;refs.push(ref);return proof.data.body;}}});
@@ -102,12 +113,13 @@ export async function refreshDiscoverySources(options:DiscoveryAcquisitionOption
     if(profile?.symbol===member.symbol&&String(profile.cik).padStart(10,'0')===member.cik&&typeof profile.website==='string')try{const parsed=new URL(profile.website);if(['http:','https:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password&&!parsed.port)website=parsed;}catch{}
     if(website)member.website=website.href;
     const previous=await store.documents([member.symbol]);let bodies=0,indexPages=0;
+    const periods=config.alphaVantageKey?transcriptQuarters(filings,snapshot.financials):[];
     const sorted=[...filings].sort((a,b)=>b.filed.localeCompare(a.filed));
     const annual=sorted.find(f=>/^10-K/.test(f.form)),quarter=sorted.find(f=>/^10-Q/.test(f.form));
     const latestEightK=sorted.find(f=>/^8-K/.test(f.form));
     const reportCandidates=[annual,quarter].filter((f):f is Filing=>Boolean(f)).sort((a,b)=>b.filed.localeCompare(a.filed));
     // The newest periodic disclosure gets the first body; preserve the issuer/8-K reservation.
-    const selected=reportCandidates.slice(0,!member.sources.length&&!latestEightK?2:1);
+    const selected=reportCandidates.slice(0,!member.sources.length&&!latestEightK&&!periods.length?2:1);
     const omitted=sorted.filter(f=>/^10-[KQ]/.test(f.form)&&!selected.some(s=>s.url===f.url&&s.accession===f.accession)&&!previous.some(d=>d.url===f.url&&d.cik===member.cik&&d.accession===f.accession));
     const secDocuments:string[]=[],secFailures:string[]=[];let allUnchanged=true,secPartial=omitted.length>0;
     for(const filing of selected){
@@ -124,14 +136,15 @@ export async function refreshDiscoverySources(options:DiscoveryAcquisitionOption
      }catch(e){assertActive();if(stops(e))throw e;secPartial=true;allUnchanged=false;secFailures.push(`${filing.form}:${code(e)}`);}
     }
     add(member.symbol,'sec-filings',`https://data.sec.gov/submissions/CIK${member.cik}.json`,!selected.length?'unavailable':secPartial?'partial':allUnchanged?'unchanged':'checked',secDocuments,!selected.length?'当前SEC索引没有可验证的10-K/10-Q正文。':`已检查当前SEC索引；仅覆盖所列年度/季度正文，不代表全部披露均已阅读。${omitted.length?`当前索引另有${omitted.length}份未缓存年度/季度正文，本轮为有界读取及官网/8-K材料保留额度而未检查：${omitted.slice(0,10).map(f=>`${f.form} ${f.filed} ${f.accession}`).join('；')}${omitted.length>10?'；其余未逐项列出':''}。`:''}${secFailures.length?`未取得的正文：${secFailures.join('；')}。`:''}`);
-    if(latestEightK){
+    const readEightK=async()=>{
+     if(!latestEightK)return;
      add(member.symbol,'sec-8k',latestEightK.url,'not-checked',[],'本轮尚未读取最新8-K的实际附件目录及正文。');
      if(member.sources.length)add(member.symbol,'sec-8k',latestEightK.url,'not-checked',[],'本轮为已登记官网来源保留正文额度；最新8-K及其附件未检查。');
      else if(bodies>=2||job.counts.dataHttpRequests>30)add(member.symbol,'sec-8k',latestEightK.url,'not-checked',[],'正文上限或剩余HTTP预算不足以核验目录并读取正文；未猜测附件URL。');
      else try{
       assertActive();let attachment:string|undefined,limited=false;
       try{
-       const listing=await transport.filingIndex(latestEightK.url) as {directory?:{item?:{name?:unknown}[]}};assertActive();
+       const listing=await transport!.filingIndex(latestEightK.url) as {directory?:{item?:{name?:unknown}[]}};assertActive();
        attachment=listing.directory?.item?.map(item=>item?.name).filter((name):name is string=>typeof name==='string'&&/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.(?:htm|html|txt)$/i.test(name)&&!name.includes('..')&&name!==latestEightK.primaryDocument&&/ex(?:hibit)?[-_]?99|99[._-]?1|earnings|release/i.test(name)).sort((a,b)=>Number(/99[._-]?1/i.test(b))-Number(/99[._-]?1/i.test(a))||a.localeCompare(b))[0];
        limited=!attachment;
       }catch(e){assertActive();if(stops(e))throw e;limited=true;}
@@ -144,22 +157,47 @@ export async function refreshDiscoverySources(options:DiscoveryAcquisitionOption
      }catch(e){assertActive();add(member.symbol,'sec-8k',latestEightK.url,'unavailable',[],`最新8-K材料未完整取得：${code(e)}。`);if(stops(e))throw e;}
     }
     let homepageLinks:{url:string;label:string}[]|undefined;
-    for(const source of member.sources){
+    const readIssuer=async(source:OfficialSource)=>{
      assertActive();
-     if(bodies>=2){add(member.symbol,source.id,source.url,'not-checked',[],'已达到每公司两份新正文上限。');continue;}
+     const cached=source.kind==='pdf'&&source.verification==='verified'?previous.find(d=>d.url===source.url&&d.cik===member.cik&&d.form==='PDF'&&d.rawEvidenceId&&fresh(d.fetchedAt,86400000)):undefined;
+     if(cached){
+      const partial=cached.warnings.some(w=>/truncat|not indexed/i.test(w));
+      add(member.symbol,source.id,source.url,partial?'partial':'unchanged',[cached.id],partial?'复用已保存的 PDF 正文，部分页面或文字未编入索引。':'复用 24 小时内已保存的官方 PDF 正文。');
+      return;
+     }
+     if(bodies>=2){add(member.symbol,source.id,source.url,'not-checked',[],'已达到每公司两份新正文上限。');return;}
      try{
-      validateOfficialSource(source);let owned=false;
+      validateOfficialSource(source);
+      const pdfPeriod=source.kind==='pdf'?salesforceTranscriptPeriod(source.url,member.cik!):undefined;
+      let owned=Boolean(pdfPeriod);
       const owner=website?.hostname.replace(/^www\./,'');const sourceHost=new URL(source.url).hostname;
       if(owner&&(sourceHost===owner||sourceHost.endsWith(`.${owner}`)))owned=true;
-      else if(website?.protocol==='https:'){
+      else if(!owned&&website?.protocol==='https:'){
        if(homepageLinks===undefined){const homepage:OfficialSource={id:'ownership',kind:'document',url:website.href,allowedHosts:[website.hostname],pathPrefix:website.pathname,verification:'verified'};const page=await officialRead(homepage,homepage.url);await recordOfficial(member.symbol,'issuer:ownership',page.url,page.html,page.fetchedAt);homepageLinks=anchors(page.html,page.url);}
-       owned=homepageLinks.some(a=>{try{return /\binvestor\s+(?:relations?|cent(?:er|re))\b|^\s*investors?\s*$|\bfinancial\s+(?:results|disclosures?|reports?)\b|投资者关系|投资者中心|财务披露|财务报告|财报/i.test(a.label)&&new URL(a.url).protocol==='https:'&&new URL(a.url).hostname===sourceHost;}catch{return false;}});
+       owned=homepageLinks.some(a=>{try{
+        if(source.kind==='pdf')return a.url===source.url;
+        return /\binvestor\s+(?:relations?|cent(?:er|re))\b|^\s*investors?\s*$|\bfinancial\s+(?:results|disclosures?|reports?)\b|投资者关系|投资者中心|财务披露|财务报告|财报/i.test(a.label)&&new URL(a.url).protocol==='https:'&&new URL(a.url).hostname===sourceHost;
+       }catch{return false;}});
       }
-      if(!owned){source.verification='pending';delete source.verifiedAt;add(member.symbol,source.id,source.url,'unavailable',[],'来源归属未由已核验公司官网域名或其实际链接证明；本轮未请求该来源。');continue;}
+      if(!owned){source.verification='pending';delete source.verifiedAt;add(member.symbol,source.id,source.url,'unavailable',[],'来源归属未由已核验公司官网域名或其实际链接证明；本轮未请求该来源。');return;}
       source.verification='verified';source.verifiedAt=new Date().toISOString();
+      if(source.kind==='pdf'){
+       bodies++;
+       const pdf=await officialPdf(source),original=pdf.bytes.toString('base64');
+       const raw=await equity.evidence(member.symbol,'issuer:pdf',{url:safe(pdf.url),encoding:'base64',body:original,fetchedAt:pdf.fetchedAt});
+       const parsed=await extractOfficialPdfText(pdf.bytes,budget.signal);
+       const title=parsed.lines[0]?.trim().slice(0,200)||new URL(pdf.url).pathname.split('/').at(-1);
+       const date=parsed.lines.slice(0,5).join(' ').match(/\b(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, 20\d{2}\b/i)?.[0];
+       const timestamp=date?Date.parse(`${date} UTC`):NaN;
+       const publishedAt=pdfPeriod&&Number.isFinite(timestamp)&&timestamp<=Date.now()?new Date(timestamp).toISOString().slice(0,10):undefined;
+       const result=await ingest(member,pdf.url,textAsDocumentHtml(parsed.lines),raw,previous,{title,form:'PDF',period:pdfPeriod,publishedAt,fetchedAt:pdf.fetchedAt},original,parsed.warnings);
+       const partial=parsed.warnings.length>0||result.document.warnings.some(w=>/truncat|limit/i.test(w));
+       add(member.symbol,source.id,pdf.url,partial?'partial':result.unchanged?'unchanged':'checked',[result.document.id],partial?'PDF 部分页面或文字未编入索引。':undefined);
+       return;
+      }
       const urls:string[]=[];let limited=false;
       if(source.kind==='index'){
-       if(indexPages){add(member.symbol,source.id,source.url,'not-checked',[],'每公司最多读取一个已登记索引及其一页后续分页。');continue;}
+       if(indexPages){add(member.symbol,source.id,source.url,'not-checked',[],'每公司最多读取一个已登记索引及其一页后续分页。');return;}
        const first=await officialRead(source,source.url);indexPages++;await recordOfficial(member.symbol,'issuer:index',first.url,first.html,first.fetchedAt);
        const discovered=discoverOfficialLinks(first.html,source,first.url);let links=[...discovered.documents],labels=anchors(first.html,first.url);
        if(discovered.nextPage&&indexPages<Math.min(2,source.maxPages??1)){const next=await officialRead(source,discovered.nextPage);indexPages++;await recordOfficial(member.symbol,'issuer:index',next.url,next.html,next.fetchedAt);links.push(...discoverOfficialLinks(next.html,source,next.url).documents);labels.push(...anchors(next.html,next.url));}
@@ -172,7 +210,36 @@ export async function refreshDiscoverySources(options:DiscoveryAcquisitionOption
       for(const url of urls){assertActive();bodies++;const page=await officialRead(source.kind==='index'?{...source,kind:'index'}:source,url);const raw=await recordOfficial(member.symbol,'issuer:document',url,page.html,page.fetchedAt);const obtained=await ingest(member,url,page.html,raw,previous,{publishedAt:publication(page.html)});ids.push(obtained.document.id);unchanged&&=obtained.unchanged;truncated||=obtained.document.warnings.some(w=>/truncat|limit/i.test(w));}
       add(member.symbol,source.id,source.url,limited||truncated?'partial':unchanged?'unchanged':'checked',ids,!urls.length?'索引未解析出可读取的HTML正文链接；动态内容或范围限制使覆盖未知，不能据此判断无新资料。':limited?'索引已检查；本轮仅选取有界正文，其余实际链接未读取。':urls.some(url=>!previous.find(d=>d.url===url)?.publishedAt)?'正文发布日期未知，不能声称为最新资料。':undefined);
      }catch(e){assertActive();add(member.symbol,source.id,source.url,'unavailable',[],`来源未完成读取：${code(e)}。`);if(stops(e))throw e;}
+    };
+    const pdfs=member.sources.filter(source=>source.kind==='pdf')
+     .sort((a,b)=>Number(previous.some(d=>d.url===a.url))-Number(previous.some(d=>d.url===b.url)));
+    for(const source of pdfs)await readIssuer(source);
+    if(config.alphaVantageKey&&!periods.length)add(member.symbol,'alpha-vantage:quarters','https://www.alphavantage.co/documentation/#transcript','not-checked',[],'现有 SEC 数据未能核验财年与财季编号。');
+    for(const quarter of periods){
+     assertActive();
+     if(previous.some(d=>d.cik===member.cik&&d.sourceKind==='issuer'&&d.form==='PDF'&&d.period===quarter))continue;
+     const sourceId=`alpha-vantage:${quarter}`,url=alphaTranscriptUrl(member.symbol,quarter);
+     const cached=previous.find(d=>d.url===url&&d.cik===member.cik&&d.sourceKind==='alpha-vantage'&&fresh(d.fetchedAt,86400000));
+     if(cached){add(member.symbol,sourceId,url,'unchanged',[cached.id],'复用 24 小时内已保存的电话会正文。');continue;}
+     if(alphaStopped||bodies>=2){add(member.symbol,sourceId,url,'not-checked',[],alphaStopped?`本轮已停止请求 Alpha Vantage：${alphaStopped}。`:'已达到每公司两份新正文上限。');continue;}
+     bodies++;
+     try{
+      const response=await transport.earningsTranscript(member.symbol,quarter);assertActive();
+      const lines=alphaTranscriptLines(response,member.symbol,quarter);
+      const raw=rawTranscripts.get(`${member.symbol}|${quarter}`);if(!raw)throw Error('RECORD_FAILED');
+      const result=await ingest(member,url,textAsDocumentHtml(lines),raw,previous,{sourceKind:'alpha-vantage',title:`${member.symbol} ${quarter} 业绩电话会`,form:'EARNINGS TRANSCRIPT',period:quarter},safe(response));
+      const partial=result.document.warnings.some(w=>/truncat|limit/i.test(w));
+      add(member.symbol,sourceId,url,partial?'partial':result.unchanged?'unchanged':'checked',[result.document.id],partial?'电话会正文索引已截断。':undefined);
+     }catch(e){
+      assertActive();
+      const reason=code(e);
+      add(member.symbol,sourceId,url,'unavailable',[],reason==='NO_TRANSCRIPT_AVAILABLE'?'Alpha Vantage 返回空正文。':`电话会未取得：${reason}。`);
+      if(/^(?:RATE_LIMIT|QUOTA_)/.test(reason))alphaStopped=reason;
+      else if(stops(e))throw e;
+     }
     }
+    await readEightK();
+    for(const source of member.sources)if(source.kind!=='pdf')await readIssuer(source);
     job.completed.push(member.symbol);job.remaining=job.symbols.filter(s=>!job.completed.includes(s));await budget.save();
    }catch(e){assertActive();if(stops(e))throw e;job.errors.push({symbol:frozen.symbol,code:code(e)});add(frozen.symbol,'sec-filings',`https://data.sec.gov/submissions/CIK${frozen.cik??'unknown'}.json`,'unavailable',[],`本公司更新未完整完成：${code(e)}。`);await budget.save();}
   }

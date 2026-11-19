@@ -4,7 +4,7 @@ import { mkdtempSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TwelveDataQuota } from '../src/twelve-quota.js';
-import { normalizeTwelvePrices, previousNewYorkDate } from '../src/twelve-data.js';
+import { normalizeTwelvePrices, normalizeTwelveStockPrices, currentNewYorkDate, previousNewYorkDate } from '../src/twelve-data.js';
 import { EquityTransport } from '../src/transport.js';
 import { loadEquityConfig } from '../src/config.js';
 
@@ -20,6 +20,16 @@ test('Twelve Data ETF prices require matching US identity, finite strings and co
   for(const close of ['', 'Infinity', '-1','12oops'])assert.throws(()=>normalizeTwelvePrices({...payload(),values:[{datetime:'2026-11-13',close}]},'QQQ','2026-11-16T06:00:00Z'));
   assert.throws(()=>normalizeTwelvePrices({...payload(),values:[{datetime:'2026-11-16',close:'1'}]},'QQQ','2026-11-16T22:00:00Z'),/INCOMPLETE_PRICE_DATE/);
   assert.equal(previousNewYorkDate('2026-11-16T02:00:00Z'),'2026-11-14');
+});
+test('Twelve Data stock prices must match verified listing and exclude the current New York date',()=>{
+  const asOf='2026-11-17T07:00:00Z';
+  const security={symbol:'CRM',cik:'0001108524',kind:'common-stock' as const,exchange:'NYSE',name:'Salesforce',currency:'USD',country:'US'};
+  const body={...payload(),meta:{...payload().meta,symbol:'CRM',exchange:'NYSE',mic_code:'XNYS',type:'Common Stock'},values:[{datetime:'2026-11-16',close:'175.25'}]};
+  assert.equal(normalizeTwelveStockPrices(body,security,asOf).bars[0]!.close,175.25);
+  for(const changes of [{symbol:'NOW'},{type:'ETF'},{mic_code:'XNGS'},{currency:'CAD'}]){
+    assert.throws(()=>normalizeTwelveStockPrices({...body,meta:{...body.meta,...changes}},security,asOf),/STOCK_PRICE_IDENTITY_MISMATCH/);
+  }
+  assert.throws(()=>normalizeTwelveStockPrices({...body,values:[{datetime:currentNewYorkDate(asOf),close:'175.25'}]},security,asOf),/INCOMPLETE_PRICE_DATE/);
 });
 test('Twelve Data reservations persist across instances, space dispatches and reset by UTC day',()=>{
   const dir=mkdtempSync(join(tmpdir(),'td-quota-')),path=join(dir,'quota.sqlite');

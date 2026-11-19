@@ -21,6 +21,34 @@ function cleanBars(series: PriceSeries): PriceBar[] {
   return [...dates.values()].filter(bar => !conflicts.has(bar.date)).sort((a,b)=>a.date.localeCompare(b.date));
 }
 
+export function commonStockSessions(series:PriceSeries[],benchmark?:PriceSeries):string[]{
+  const calendars=series.map(prices=>new Set(cleanBars(prices).map(bar=>bar.date)));
+  const dates=[...new Set(calendars.flatMap(days=>[...days]))].sort();
+  const end=dates.filter(date=>calendars.every(days=>days.has(date))).at(-1);
+  if(!end)return [];
+  const benchmarkDates=benchmark?.symbol==='SPY'?cleanBars(benchmark).map(bar=>bar.date):[];
+  return [...new Set([...dates,...benchmarkDates])].filter(date=>date<=end).sort();
+}
+
+export function derivePriceReturns(prices:PriceSeries|undefined,sourceRefs:string[],sessions?:string[]):Metrics{
+  const bars=prices?cleanBars(prices):[];
+  const byDate=new Map(bars.map(bar=>[bar.date,bar]));
+  const last=sessions?byDate.get(sessions.at(-1)??''):bars.at(-1);
+  const result:Metrics={};
+  for(const horizon of horizons){
+    const first=sessions?byDate.get(sessions.at(-1-horizon)??''):bars.at(-1-horizon);
+    const valid=prices?.adjustment==='split-adjusted'&&first&&last;
+    result[`return${horizon}d`]={
+      value:valid?round((last.close/first.close-1)*100):null,unit:'percent',
+      definition:`${horizon}-trading-session split-adjusted price return; excludes dividends.`,
+      period:valid?`${first.date}/${last.date}`:last?.date??'unavailable',
+      sourceRefs:prices?[...new Set([...sourceRefs,prices.source])]:[...sourceRefs],
+      ...(!valid?{reason:'Verified split-adjusted closes for the required trading sessions are unavailable.'}:{}),
+    };
+  }
+  return {...result,priceReturn21:{...result.return21d!}};
+}
+
 function trailingQuarterSum(financials:Financials, metric:string): {value:number; points:FinancialPoint[]} | undefined {
   const points = financials.quarterly.filter(p=>p.metric===metric && p.start && Number.isFinite(p.value)).sort((a,b)=>b.end.localeCompare(a.end)).slice(0,4).reverse();
   if (points.length!==4) return undefined;
@@ -71,15 +99,7 @@ export function deriveMetrics(security:Security,financials:Financials,prices?:Pr
   const last=bars.at(-1);
   const eps=latest('dilutedEps');
   set('pe',null,'multiple','Price / diluted EPS, requiring a verified compatible split/share basis and positive earnings.',`price:${last?.date??'unavailable'}; report:${eps?period(eps):'unavailable'}`,eps?[eps]:[],ratioReason ?? (eps&&eps.value<=0?'P/E unavailable for nonpositive earnings.':'Compatible diluted EPS share/split basis has not been verified.'));
-  for (const horizon of horizons) {
-    const first=bars.at(-1-horizon);
-    const valid=prices?.adjustment==='split-adjusted'&&first&&last;
-    const key=`return${horizon}d`;
-    set(key,valid?round((last.close/first.close-1)*100):null,'percent',`${horizon}-trading-session split-adjusted price return; excludes dividends.`,valid?`${first.date}/${last.date}`:last?.date??'unavailable',[],valid?undefined:'Verified split-adjusted price history or required trading sessions unavailable.');
-    result[key]!.sourceRefs=prices?[...new Set([...sourceRefs,prices.source])]:[...sourceRefs];
-  }
-  result.priceReturn21={...result.return21d!};
-  return result;
+  return {...result,...derivePriceReturns(prices?.symbol===security.symbol?prices:undefined,sourceRefs)};
 }
 
 export function buildMarketSnapshot(series:PriceSeries[]):MarketSnapshot {

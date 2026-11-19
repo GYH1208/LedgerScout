@@ -30,9 +30,10 @@ function htmlPath(url:URL):boolean {
 }
 
 export function validateOfficialSource(source:OfficialSource):OfficialSource {
- if(!source||! /^[a-zA-Z0-9_-]{1,60}$/.test(source.id)||!['document','index'].includes(source.kind)||!['pending','verified'].includes(source.verification))throw error('SOURCE_CONFIG');
+ if(!source||! /^[a-zA-Z0-9_-]{1,60}$/.test(source.id)||!['document','index','pdf'].includes(source.kind)||!['pending','verified'].includes(source.verification))throw error('SOURCE_CONFIG');
  const u=safeUrl(source.url);
- if(u.hash||!htmlPath(u)||!Array.isArray(source.allowedHosts)||source.allowedHosts.length!==1||source.allowedHosts[0]!==u.hostname||typeof source.pathPrefix!=='string'||!source.pathPrefix.startsWith('/')||/[?#%\\\x00-\x20]/.test(source.pathPrefix)||source.pathPrefix.includes('//')||source.pathPrefix.split('/').some(p=>p==='.'||p==='..')||!inScope(u,source)||source.maxPages!==undefined&&![1,2].includes(source.maxPages))throw error('SOURCE_SCOPE');
+ const validPath=source.kind==='pdf'?/\.pdf$/i.test(u.pathname):htmlPath(u);
+ if(u.hash||!validPath||!Array.isArray(source.allowedHosts)||source.allowedHosts.length!==1||source.allowedHosts[0]!==u.hostname||typeof source.pathPrefix!=='string'||!source.pathPrefix.startsWith('/')||/[?#%\\\x00-\x20]/.test(source.pathPrefix)||source.pathPrefix.includes('//')||source.pathPrefix.split('/').some(p=>p==='.'||p==='..')||!inScope(u,source)||source.maxPages!==undefined&&![1,2].includes(source.maxPages))throw error('SOURCE_SCOPE');
  return{...source,url:u.href,allowedHosts:[...source.allowedHosts]};
 }
 
@@ -78,11 +79,27 @@ function publicAddress(address:string):boolean {
 }
 
 type ReaderOptions={fetch?:typeof fetch;signal?:AbortSignal;beforeRequest?:()=>void|Promise<void>;lookup?:(host:string)=>Promise<{address:string;family:number}[]>};
+export async function readOfficialPage(source:OfficialSource,url:string,options:ReaderOptions={}):Promise<{html:string;url:string;fetchedAt:string}>{
+ if(source.kind==='pdf')throw error('SOURCE_SCOPE');
+ const {bytes,...result}=await readOfficialBytes(source,url,options);
+ const html=bytes.toString('utf8');if(html.includes('\0'))throw error('RESPONSE_TYPE');
+ return {...result,html};
+}
+
+export async function readOfficialPdf(source:OfficialSource,options:ReaderOptions={}):Promise<{bytes:Buffer;url:string;fetchedAt:string}>{
+ if(source.kind!=='pdf')throw error('SOURCE_SCOPE');
+ const result=await readOfficialBytes(source,source.url,options);
+ if(result.bytes.subarray(0,5).toString('ascii')!=='%PDF-')throw error('RESPONSE_TYPE');
+ return result;
+}
+
 /** No redirects/retries. Real requests pin a prevalidated public DNS address through TLS lookup. */
-export async function readOfficialPage(rawSource:OfficialSource,url:string,options:ReaderOptions={}):Promise<{html:string;url:string;fetchedAt:string}>{
+async function readOfficialBytes(rawSource:OfficialSource,url:string,options:ReaderOptions):Promise<{bytes:Buffer;url:string;fetchedAt:string}>{
  const source=validateOfficialSource(rawSource),target=safeUrl(url);
  if(source.verification!=='verified')throw error('SOURCE_NOT_VERIFIED');
- if(target.hash||!inScope(target,source)||!htmlPath(target)||source.kind==='document'&&target.href!==source.url)throw error('SOURCE_SCOPE');
+ const pdf=source.kind==='pdf';
+ if(target.hash||!inScope(target,source)||(pdf?!/\.pdf$/i.test(target.pathname):!htmlPath(target))||source.kind!=='index'&&target.href!==source.url)throw error('SOURCE_SCOPE');
+ const accept=pdf?'application/pdf':'text/html, application/xhtml+xml';
  const controller=new AbortController();
  let timeout=false;
  const timer=setTimeout(()=>{timeout=true;controller.abort();},15000);
@@ -98,7 +115,7 @@ export async function readOfficialPage(rawSource:OfficialSource,url:string,optio
    const addresses=options.lookup?await options.lookup(target.hostname):options.fetch?undefined:await lookup(target.hostname,{all:true,verbatim:true});check();
    if(addresses&&(!addresses.length||addresses.some(a=>!publicAddress(a.address))))throw error('SOURCE_PRIVATE_ADDRESS');
    await options.beforeRequest?.();check();
-   response=options.fetch?await options.fetch(target.href,{redirect:'error',signal:controller.signal,headers:{accept:'text/html, application/xhtml+xml'}}):await pinnedRequest(target,addresses![0]!,controller.signal);
+   response=options.fetch?await options.fetch(target.href,{redirect:'error',signal:controller.signal,headers:{accept}}):await pinnedRequest(target,addresses![0]!,controller.signal,accept);
    check();
    if(response.redirected||response.status>=300&&response.status<400)throw error('REDIRECT');
    if(!response.ok)throw error(response.status===429?'RATE_LIMIT':'HTTP_ERROR');
@@ -106,23 +123,22 @@ export async function readOfficialPage(rawSource:OfficialSource,url:string,optio
    const declared=Number(response.headers.get('content-length')??'0');
    if(!Number.isFinite(declared)||declared<0||declared>MAX_BYTES)throw error('RESPONSE_SIZE');
    const type=(response.headers.get('content-type')??'').split(';')[0]!.trim().toLowerCase();
-   if(type&&!['text/html','application/xhtml+xml'].includes(type))throw error('RESPONSE_TYPE');
+   if(pdf?!['application/pdf','application/octet-stream'].includes(type):type&&!['text/html','application/xhtml+xml'].includes(type))throw error('RESPONSE_TYPE');
    if(!response.body)throw error('RESPONSE_EMPTY');
    const reader=response.body.getReader(),parts:Uint8Array[]=[];let bytes=0;
    const cancelReader=()=>{void reader.cancel().catch(()=>{});};controller.signal.addEventListener('abort',cancelReader,{once:true});
    try{while(true){check();const part=await reader.read();check();if(part.done)break;bytes+=part.value.byteLength;if(bytes>MAX_BYTES)throw error('RESPONSE_SIZE');parts.push(part.value);}}
    finally{controller.signal.removeEventListener('abort',cancelReader);await reader.cancel().catch(()=>{});reader.releaseLock();}
-   const html=Buffer.concat(parts).toString('utf8');if(html.includes('\0'))throw error('RESPONSE_TYPE');
-   return{html,url:target.href,fetchedAt:new Date().toISOString()};
+   return{bytes:Buffer.concat(parts),url:target.href,fetchedAt:new Date().toISOString()};
   };
   return await Promise.race([operation(),aborted]);
  }catch(e){if(options.signal?.aborted||controller.signal.aborted)check();if(e instanceof Error&&e.message.startsWith('OFFICIAL_'))throw e;throw error('HTTP_FAILED');}
  finally{clearTimeout(timer);options.signal?.removeEventListener('abort',onAbort);controller.signal.removeEventListener('abort',abortHandler);if(response?.body&&!response.body.locked)void response.body.cancel().catch(()=>{});}
 }
 
-function pinnedRequest(url:URL,address:{address:string;family:number},signal:AbortSignal):Promise<Response>{
+function pinnedRequest(url:URL,address:{address:string;family:number},signal:AbortSignal,accept:string):Promise<Response>{
  return new Promise((resolve,reject)=>{
-  const request=httpsRequest(url,{method:'GET',signal,headers:{accept:'text/html, application/xhtml+xml','accept-encoding':'identity'},lookup:(_host,opts,cb)=>{if(opts.all)cb(null,[address]);else cb(null,address.address,address.family);}},incoming=>{
+  const request=httpsRequest(url,{method:'GET',signal,headers:{accept,'accept-encoding':'identity'},lookup:(_host,opts,cb)=>{if(opts.all)cb(null,[address]);else cb(null,address.address,address.family);}},incoming=>{
    if(incoming.headers['content-encoding']&&incoming.headers['content-encoding']!=='identity'){incoming.destroy();reject(error('RESPONSE_ENCODING'));return;}
    const headers=new Headers();for(const [k,v] of Object.entries(incoming.headers))if(v!==undefined)headers.set(k,Array.isArray(v)?v.join(', '):v);
    // A web stream keeps the decoded-body bound in one reader implementation.

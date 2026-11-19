@@ -6,7 +6,7 @@ import { parseCapabilityArgs, inspectCapability, assessCoverage, type Capability
 import { DailyQuota } from './quota.js';
 import { EquityTransport, EquityDataError, safeEquityCode } from './transport.js';
 import { EquityProvider } from './provider.js';
-import { normalizeTwelvePrices } from './twelve-data.js';
+import { normalizeTwelvePrices,TWELVE_STOCK_PRICE_SOURCE } from './twelve-data.js';
 import { buildMarketSnapshot } from './metrics.js';
 import type { PriceSeries } from './types.js';
 
@@ -21,7 +21,7 @@ export async function runCapabilityCli(args=process.argv.slice(2)):Promise<void>
     await results.save('provider-response',record);
     if(selected.stage==='stocks'){
       const r=record as {endpoint:string;symbol?:string;body?:unknown;code?:string;status?:number};
-      if(r.symbol)rows.push(inspectCapability(r.endpoint,r.symbol,r.body,r.code?new EquityDataError(r.code,r.status):undefined));
+      if(r.symbol&&r.endpoint!=='stock_time_series')rows.push(inspectCapability(r.endpoint,r.symbol,r.body,r.code?new EquityDataError(r.code,r.status):undefined));
     }
   }});
   const provider=new EquityProvider(transport);
@@ -30,7 +30,13 @@ export async function runCapabilityCli(args=process.argv.slice(2)):Promise<void>
       if(selected.stage==='stocks') {
         if(halted){rows.push(inspectCapability('company',symbol,undefined,new EquityDataError(halted)));continue;}
         try{
-          await provider.getCompany(symbol);
+          const company=await provider.getCompany(symbol);
+          if(config.twelveDataKey){
+            const prices=company.prices;
+            const prefix='twelve-data-prices:';
+            const code=company.warnings.find(w=>w.startsWith(prefix))?.slice(prefix.length)??'PRICE_DATA_UNAVAILABLE';
+            rows.push(prices?.source===TWELVE_STOCK_PRICE_SOURCE?{endpoint:'stock_time_series',symbol,status:'available',fields:['meta','values','status'],historyLength:prices.bars.length,asOf:prices.bars.at(-1)!.date,adjustment:'split-adjusted'}:inspectCapability('stock_time_series',symbol,undefined,new EquityDataError(code)));
+          }
           for(const r of rows)if(r.symbol===symbol)r.identityVerified=true;
         }catch(error){
           const code=safeEquityCode(error);rows.push(inspectCapability('company',symbol,undefined,error));

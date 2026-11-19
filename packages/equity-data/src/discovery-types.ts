@@ -2,13 +2,13 @@ import type {CompanySnapshot,MetricValue} from './types.js';
 
 export const THEMES=[{id:'workflow',label:'企业工作流'},{id:'developer',label:'软件开发'},{id:'content',label:'内容创作'},{id:'vertical',label:'垂直行业应用'}] as const;
 export type ThemeKey=typeof THEMES[number]['id'];
-export type OfficialSource={id:string;kind:'document'|'index';url:string;allowedHosts:string[];pathPrefix:string;maxPages?:1|2;verification:'pending'|'verified';verifiedAt?:string};
+export type OfficialSource={id:string;kind:'document'|'index'|'pdf';url:string;allowedHosts:string[];pathPrefix:string;maxPages?:1|2;verification:'pending'|'verified';verifiedAt?:string};
 export type DiscoveryMember={symbol:string;name?:string;cik?:string;website?:string;themes:ThemeKey[];sources:OfficialSource[];verification:'pending'|'verified'};
 export type DiscoveryUniverse={version:number;createdAt:string;members:DiscoveryMember[]};
 export type SectionKind='business'|'mda'|'risk'|'financial'|'other';
 export type DocumentSection={id:string;title:string;kind:SectionKind;start:number;end:number;confidence:'heading'|'fallback'};
 export type EvidenceChunk={id:string;documentId:string;symbol:string;cik:string;sectionId:string;kind:SectionKind;text:string;start:number;end:number;hash:string};
-export type DiscoveryDocument={id:string;symbol:string;cik:string;sourceKind:'sec'|'issuer';rawEvidenceId?:string;url:string;title:string;form?:string;accession?:string;period?:string;publishedAt?:string;fetchedAt:string;hash:string;text:string;sections:DocumentSection[];chunks:EvidenceChunk[];warnings:string[]};
+export type DiscoveryDocument={id:string;symbol:string;cik:string;sourceKind:'sec'|'issuer'|'alpha-vantage';rawEvidenceId?:string;url:string;title:string;form?:string;accession?:string;period?:string;publishedAt?:string;fetchedAt:string;hash:string;text:string;sections:DocumentSection[];chunks:EvidenceChunk[];warnings:string[]};
 export type EvidenceCitation={chunkId:string;quote:string};
 export type ResearchClaim={text:string;kind:'issuer-claim'|'analysis';scope:'company'|'segment'|'ai-product'|'unknown';citations:EvidenceCitation[]};
 export type CompanyExtraction={symbol:string;themes:ThemeKey[];claims:ResearchClaim[];opposing:ResearchClaim[];gaps:string[]};
@@ -45,7 +45,7 @@ export function validateUniverse(value:unknown):DiscoveryMember[]{
       let url:URL;try{url=new URL(s.url);}catch{throw Error('Invalid source URL');}
       const host=url.hostname;
       if(url.protocol!=='https:'||url.username||url.password||url.port||!host.includes('.')||/^[\d.]+$/.test(host)||host.includes(':')||/\.(?:local|localhost|internal|test|invalid)$/.test(host)||url.hash)throw Error('Invalid source URL');
-      if(!['document','index'].includes(s.kind)||!Array.isArray(s.allowedHosts)||s.allowedHosts.length!==1||s.allowedHosts[0]!==host||typeof s.pathPrefix!=='string'||!s.pathPrefix.startsWith('/')||s.pathPrefix.includes('..')||!url.pathname.startsWith(s.pathPrefix)||s.maxPages!==undefined&&![1,2].includes(s.maxPages))throw Error('Invalid source scope');
+      if(!['document','index','pdf'].includes(s.kind)||!Array.isArray(s.allowedHosts)||s.allowedHosts.length!==1||s.allowedHosts[0]!==host||typeof s.pathPrefix!=='string'||!s.pathPrefix.startsWith('/')||s.pathPrefix.includes('..')||!url.pathname.startsWith(s.pathPrefix)||s.maxPages!==undefined&&![1,2].includes(s.maxPages))throw Error('Invalid source scope');
       return{id:s.id,kind:s.kind,url:url.href,allowedHosts:[host],pathPrefix:s.pathPrefix,maxPages:s.kind==='index'?(s.maxPages??1):1,verification:'pending'};
     });
     return{symbol:r.symbol,...(r.name?{name:r.name as string}:{}),themes:r.themes as ThemeKey[],sources,verification:'pending'};

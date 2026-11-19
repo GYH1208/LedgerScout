@@ -49,6 +49,51 @@ test('web and CLI use the configured shared supplier quota directory',async()=>{
   finally{await service.close();await rm(dir,{recursive:true,force:true});}
 });
 
+test('stock refresh upgrades a fresh legacy snapshot and its screen using Twelve Data',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'equity-td-stock-'));
+  const {EquityStore}=await import('../src/equity-store.js');
+  const {previousNewYorkDate}=await import('../../equity-data/src/twelve-data.js');
+  const seed=new EquityStore(dir);
+  const now=new Date().toISOString(),last=previousNewYorkDate(now);
+  const security={symbol:'CRM',name:'Salesforce',cik:'0001108524',exchange:'NYSE',currency:'USD',country:'US',kind:'common-stock' as const,industry:'Software'};
+  const financials={annual:[],quarterly:[],warnings:[]};
+  seed.setPool(['CRM']);
+  const oldId=await seed.saveCompany({security,financials,prices:{symbol:'CRM',adjustment:'unknown',source:'fmp:historical-price-eod/light',fetchedAt:now,bars:[{date:last,close:99}]},metrics:{},filings:[],sourceRefs:[],warnings:[],fetchedAt:now});
+  seed.close();
+  const days=Array.from({length:65},(_,i)=>new Date(Date.parse(last)-(64-i)*86_400_000).toISOString().slice(0,10));
+  let calls=0,researchContext='';
+  const service=createEquityService({directory:dir,config:()=>({...config(dir),fmpKey:'stock-fmp-key',secUserAgent:'test@ledgerscout.invalid',twelveDataKey:'stock-td-key'}),request:async request=>{
+    researchContext=request.messages.map(message=>message.content).join('\n');
+    return {content:'{}'};
+  },fetch:async(input,init)=>{
+    calls++;const url=new URL(String(input));
+    assert.equal(url.hostname,'api.twelvedata.com');
+    assert.equal(url.searchParams.get('type'),'Common Stock');
+    assert.equal(url.searchParams.get('symbol'),'CRM');
+    assert.equal(url.searchParams.get('adjust'),'splits');
+    assert.equal(Date.parse(url.searchParams.get('end_date')!)-Date.parse(last),86_400_000);
+    assert.equal(new Headers(init?.headers).get('Authorization'),'apikey stock-td-key');
+    return Response.json({meta:{symbol:'CRM',interval:'1day',currency:'USD',exchange_timezone:'America/New_York',mic_code:'XNYS',type:'Common Stock'},status:'ok',values:days.map((datetime,i)=>({datetime,close:String(100+i)}))});
+  }});
+  try{
+    await service.route('POST','/refresh',{kind:'stocks',symbols:['CRM']},new URLSearchParams());await service.wait();
+    const state=(await service.route('GET','/state',{},new URLSearchParams())).value as any;
+    assert.equal(calls,1);assert.equal(state.activeJob.status,'completed');assert.equal(state.marketQuota.used,1);assert.equal(state.quota.used,0);
+    assert.equal(state.companies[0].prices.adjustment,'split-adjusted');
+    assert.equal(state.companies[0].fetchedAt,now);
+    assert.deepEqual(state.companies[0].financials,financials);
+    assert.equal(state.companies[0].metrics.pe.value,null);
+    assert.ok(state.companies[0].sourceRefs.some((ref:any)=>ref.source.startsWith('twelve-data:')));
+    assert.ok(!JSON.stringify(state).includes('stock-td-key'));
+    const screen=(await service.route('POST','/screen',{filters:[{field:'return63d',op:'gt',value:0}]},new URLSearchParams())).value as any;
+    assert.deepEqual(screen.matches.map((match:any)=>match.symbol),['CRM']);
+    assert.notEqual(screen.matches[0].snapshotId,oldId);
+    await service.route('POST','/research',{symbol:'CRM',question:'近 63 个交易日表现如何？'},new URLSearchParams());await service.wait();
+    assert.match(researchContext,/"return63d":\{"value":[0-9.]+/);
+    assert.equal(calls,1);
+  }finally{await service.close();await rm(dir,{recursive:true,force:true});}
+});
+
 test('explicit stock refresh saves source-backed snapshots and history follow-up reuses evidence without HTTP',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'equity-live-offline-'));let calls=0;
   const cfg={...config(dir),fmpKey:'offline-fmp-secret',secUserAgent:'LedgerScout testing contact@ledgerscout.invalid'};

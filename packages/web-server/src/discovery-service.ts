@@ -6,6 +6,7 @@ import {loadEquityConfig,type EquityConfig} from '../../equity-data/src/config.j
 import {THEMES,validateUniverse,type DiscoveryDocument,type DiscoveryInput,type DiscoveryJob,type DiscoveryMember,type FrozenCompany,type ThesisInput} from '../../equity-data/src/discovery-types.js';
 import {retrieveChunks} from '../../equity-data/src/documents.js';
 import {validateOfficialSource} from '../../equity-data/src/official-sources.js';
+import {salesforceTranscriptSources} from '../../equity-data/src/earnings-transcripts.js';
 import {EquityStore} from './equity-store.js';
 import {DiscoveryStore} from './discovery-store.js';
 import {newDiscoveryJob,runDiscoveryTask,validateCitations,discoveryCode} from './discovery-runtime.js';
@@ -28,15 +29,25 @@ function latestDocuments(documents:DiscoveryDocument[]):DiscoveryDocument[]{
 export function createDiscoveryService(options:Options){
   const store=new DiscoveryStore(options.directory),equity=options.equity;
   const config=options.config??loadEquityConfig,modelConfig=options.modelConfig??loadRuntimeConfig;
-  const secrets=()=>{try{const c=config();return[c.fmpKey,c.twelveDataKey??'',c.secUserAgent,modelConfig().key].filter(Boolean);}catch{return[];}};
+  const secrets=()=>{
+    const values:string[]=[];
+    try{const c=config();values.push(c.fmpKey,c.twelveDataKey??'',c.alphaVantageKey??'',c.secUserAgent);}catch{}
+    try{values.push(modelConfig().key);}catch{}
+    return values.filter(Boolean);
+  };
   const safe=<T>(v:T)=>redact(v,secrets()) as T;
   let active:{job:DiscoveryJob;controller:AbortController;task:Promise<void>}|undefined,accepting=false,closed=false;
   if(!store.universe().version){
     const seedSources:Record<string,{url:string;pathPrefix:string}>={MSFT:{url:'https://www.microsoft.com/en-us/investor/default',pathPrefix:'/en-us/investor/'},CRM:{url:'https://investor.salesforce.com/news/',pathPrefix:'/news/'},NOW:{url:'https://investor.servicenow.com/overview/default.aspx',pathPrefix:'/'}};
     const seed=[['MSFT','workflow','developer'],['GOOGL','workflow','content'],['ADBE','content'],['CRM','workflow'],['NOW','workflow','vertical'],['INTU','vertical'],['DUOL','vertical'],['PLTR','vertical'],['HUBS','workflow'],['PATH','workflow']];
-    store.setUniverse(validateUniverse(seed.map(([symbol,...themes])=>({symbol,themes,sources:seedSources[symbol!]?([{id:'investor-news',kind:'index',url:seedSources[symbol!]!.url,allowedHosts:[new URL(seedSources[symbol!]!.url).hostname],pathPrefix:seedSources[symbol!]!.pathPrefix,maxPages:1}]):[]}))),0);
+    store.setUniverse(validateUniverse(seed.map(([symbol,...themes])=>{
+      const source=seedSources[symbol!];
+      const sources=source?[{id:'investor-news',kind:'index',url:source.url,allowedHosts:[new URL(source.url).hostname],pathPrefix:source.pathPrefix,maxPages:1}]:[];
+      const transcripts=symbol==='CRM'?salesforceTranscriptSources.map(({verification,verifiedAt,...s})=>s):[];
+      return {symbol,themes,sources:[...transcripts,...sources]};
+    })),0);
   }
-  const configured=()=>{try{const c=config();return{fmp:Boolean(c.fmpKey),sec:Boolean(c.secUserAgent),deepseek:Boolean(options.request||modelConfig().key)};}catch{return{fmp:false,sec:false,deepseek:false};}};
+  const configured=()=>{try{const c=config();return{fmp:Boolean(c.fmpKey),sec:Boolean(c.secUserAgent),deepseek:Boolean(options.request||modelConfig().key),alphaVantage:Boolean(c.alphaVantageKey)};}catch{return{fmp:false,sec:false,deepseek:false,alphaVantage:false};}};
   function canResume(job:DiscoveryJob):boolean{return ['failed','cancelled','interrupted'].includes(job.status)&&!job.resumedBy&&job.counts.modelRequests<15&&job.counts.toolCalls<12&&job.counts.dataHttpRequests<32&&job.counts.elapsedMs+job.reservedMs<300000;}
   function attachCoverage(job:DiscoveryJob){
     const refreshes=store.jobs().filter(j=>j.kind==='refresh');

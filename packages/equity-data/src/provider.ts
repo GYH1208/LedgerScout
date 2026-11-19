@@ -1,5 +1,6 @@
 import type { Filing, PriceBar, PriceSeries, Security } from './types.js';
 import { EquityDataError, EquityTransport, equitySymbol, safeEquityCode } from './transport.js';
+import { normalizeTwelveStockPrices } from './twelve-data.js';
 
 type Row=Record<string,unknown>;
 function row(value:unknown):Row {if(!value||typeof value!=='object'||Array.isArray(value))throw new EquityDataError('INVALID_DATA');return value as Row;}
@@ -55,13 +56,18 @@ export function normalizeFilings(submissions:unknown,security:Security):Filing[]
     const primaryDocument=(recent.primaryDocument as unknown[])[i],form=(recent.form as unknown[])[i];
     if(typeof form!=='string'||!['10-K','10-K/A','10-Q','10-Q/A','8-K','8-K/A'].includes(form))return [];
     if(typeof accession!=='string'||!/^\d{10}-\d{2}-\d{6}$/.test(accession)||typeof primaryDocument!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.(?:htm|html|txt)$/i.test(primaryDocument)||primaryDocument.includes('..')||typeof form!=='string'||!/^[A-Z0-9 /-]{1,30}$/.test(form))throw new EquityDataError('INVALID_FILING');
-    return [{accession,form,filed:day((recent.filingDate as unknown[])[i]),primaryDocument,url:`https://www.sec.gov/Archives/edgar/data/${Number(security.cik)}/${accession.replaceAll('-','')}/${primaryDocument}`}];
+    let reportDate:string|undefined;
+    try{if(Array.isArray(recent.reportDate))reportDate=day(recent.reportDate[i]);}catch{/* This optional field does not invalidate the filing. */}
+    return [{accession,form,filed:day((recent.filingDate as unknown[])[i]),primaryDocument,url:`https://www.sec.gov/Archives/edgar/data/${Number(security.cik)}/${accession.replaceAll('-','')}/${primaryDocument}`,...(reportDate?{reportDate}:{})}];
   });
 }
 export class EquityProvider {
   private tickers?:unknown;
   constructor(private readonly transport:EquityTransport,private readonly options:{profileCache?:{get:(symbol:string)=>Promise<unknown|undefined>}}={}) {}
   async getMarket(symbol:string):Promise<PriceSeries> {const s=equitySymbol(symbol);return normalizePrices(await this.transport.request('fmp','historical-price-eod/light',s),s);}
+  async getStockPrices(security:Security):Promise<PriceSeries>{
+    return normalizeTwelveStockPrices(await this.transport.request('twelve-data','stock_time_series',security.symbol),security);
+  }
   async getCompany(symbol:string):Promise<{security:Security;prices?:PriceSeries;companyFacts:unknown;filings:Filing[];warnings:string[]}> {
     const s=equitySymbol(symbol);
     const profile=await this.options.profileCache?.get(s)??await this.transport.request('fmp','profile',s);
@@ -73,10 +79,11 @@ export class EquityProvider {
     const companyFacts=await this.transport.request('sec',`api/xbrl/companyfacts/CIK${security.cik}.json`,s);
     if(cik(row(companyFacts).cik)!==security.cik||!row(companyFacts).facts)throw new EquityDataError('COMPANYFACTS_IDENTITY_MISMATCH');
     let prices:PriceSeries|undefined;const warnings:string[]=[];
-    try{prices=await this.getMarket(s);}catch(error){
+    const useTwelveData=this.transport.hasTwelveDataKey;
+    try{prices=useTwelveData?await this.getStockPrices(security):await this.getMarket(s);}catch(error){
       const code=safeEquityCode(error);
-      if(['CANCELLED','STAGE_DEADLINE','RATE_LIMIT','QUOTA_EXHAUSTED','QUOTA_STORAGE','RECORD_FAILED','HTTP_BUDGET'].includes(code))throw error;
-      warnings.push(`prices:${code}`);
+      if(['CANCELLED','STAGE_DEADLINE','RECORD_FAILED','HTTP_BUDGET','REQUEST_REJECTED'].includes(code)||!useTwelveData&&['RATE_LIMIT','QUOTA_EXHAUSTED','QUOTA_STORAGE'].includes(code))throw error;
+      warnings.push(useTwelveData?`twelve-data-prices:${code}`:`prices:${code}`);
     }
     return {security,prices,companyFacts,filings,warnings};
   }

@@ -79,7 +79,7 @@ export class DiscoveryStore {
     const rel=relative(await realpath(this.base),await realpath(this.documentDirectory));if(rel.startsWith('..')||isAbsolute(rel))throw Error('Document directory outside storage root');
   }
   private validateDocument(doc:DiscoveryDocument){
-    if(!identity(doc.id)||!symbol(doc.symbol)||!/^\d{1,10}$/.test(doc.cik)||!['sec','issuer'].includes(doc.sourceKind)||!date(doc.fetchedAt)||typeof doc.text!=='string'||Buffer.byteLength(doc.text)>16_000_000||hash(doc.text)!==doc.hash)throw Error('Invalid document identity or text hash');
+    if(!identity(doc.id)||!symbol(doc.symbol)||!/^\d{1,10}$/.test(doc.cik)||!['sec','issuer','alpha-vantage'].includes(doc.sourceKind)||!date(doc.fetchedAt)||typeof doc.text!=='string'||Buffer.byteLength(doc.text)>16_000_000||hash(doc.text)!==doc.hash)throw Error('Invalid document identity or text hash');
     if(doc.publishedAt!==undefined&&(typeof doc.publishedAt!=='string'||!calendarDate(doc.publishedAt)&&!date(doc.publishedAt)))throw Error('Invalid disclosure publication date');
     const url=new URL(doc.url);if(url.protocol!=='https:'||url.username||url.password)throw Error('Invalid document source URL');
     if(!Array.isArray(doc.sections)||!Array.isArray(doc.chunks)||!Array.isArray(doc.warnings)||doc.sections.length>2000||doc.chunks.length>20000)throw Error('Invalid document index');
