@@ -10,8 +10,15 @@ The user subsequently selected SQLite for local single-user persistence and appr
 
 Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
 
+On 2026-11-16 the user approved the US-equity design and authorized offline implementation while applying for the free FMP key. Live equity view is `?mode=live&domain=us-equity`; retain the selected white/gray/blue layout and separate Ethereum entry. Never render sample stock facts in live mode. Keep actual source coverage, adjustment semantics, and PE availability visibly unverified until real credentials and share/price bases are checked. Market refresh and at-most-five-stock refresh remain explicit; no startup refresh or automatic batch continuation.
+
 Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
 
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
+
+On 2026-11-16, after live FMP ETF HTTP402 responses, the user explicitly approved Twelve Data free ETF pricing. Market readiness/status/quota must use TWELVE_DATA_API_KEY and the separate shared daily/pacing ledger; retain FMP+SEC company research. Never relabel old FMP market cache as Twelve Data or mix its unknown adjustment into ETF returns.
+
+
+On 2026-11-16 the user approved AI application discovery for a12–24month investment thesis horizon. Add discover/theses tabs within the existing equity workspace; maintain30-entry discovery catalog separately from10-stock research pool. Flow: explicitly selected source refresh (max5) → cached scan (max10) → candidate single-company handoff → editable, explicitly confirmed thesis → evidence-change review with accept/edit/reject and immutable versions. Registered issuer-source edits remain pending until verified; no startup/provider refresh, sample conclusions, return rankings, background monitoring or trades. Show partial source coverage and preserve gaps across handoff/confirmation/review. Spec: ../../docs/superpowers/specs/2026-11-16-ai-application-discovery-design.md.

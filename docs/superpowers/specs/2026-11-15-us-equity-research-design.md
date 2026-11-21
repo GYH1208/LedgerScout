@@ -106,3 +106,12 @@
 ## 设计审阅
 
 独立实现者检查认为没有阻碍实施计划的重要未决问题。已明确池外单只研究与筛选股票池的边界。真实免费接口覆盖仍按上述可行性检查验证，不能用文档推断代替实测。
+
+
+## 2026-11-16 已批准的数据源补充
+
+用户实际免费FMP账户可读5只测试个股和SEC数据，但QQQ与11只行业ETF的FMP light接口返回HTTP402；仅SPY可用，原13只市场最低覆盖未达标。用户明确批准“接入 Twelve Data 免费行情”。因此ETF市场页改用Twelve Data，个股资料/日线与财务披露继续FMP＋SEC，不自动回退混源、不升级付费套餐。
+
+Twelve Data只请求固定13只ETF的 `/time_series`，使用Header授权、`interval=1day`、`type=ETF`、`country=United States`、`outputsize=128`、`adjust=splits`，保守截止纽约前一日。校验美元/ETF/美国交易所MIC（包含Nasdaq分市场）与纽约时区、合法交易日期和数值后才计算。独立事务额度账本默认600次/UTC日，上限800，8秒间隔；失败与重试计数，429立即停止。既有32次HTTP/300秒显式操作预算不变。配置新增 `TWELVE_DATA_API_KEY` / `TWELVE_DATA_DAILY_LIMIT`；CLI与Web按 `EQUITY_OUTPUT_DIRECTORY` 共享额度账本。
+
+本机13次真实HTTP均成功，各128条日线，共同日期2026-11-13；已保存原始响应与重新校验报告。此项验证不替代整个研究、浏览器交互及恢复流程的验收。官方依据：https://twelvedata.com/docs/market-data/time-series ，https://twelvedata.com/pricing ，https://support.twelvedata.com/en/articles/5615854-credits 。
